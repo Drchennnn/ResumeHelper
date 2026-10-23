@@ -3,6 +3,8 @@ import {readFile} from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import {getFieldHelp} from '../extension/lib/field-help.js';
+import {splitRegions} from '../extension/lib/catalog-control.js';
 const workbenchSource=(await readFile(new URL('../extension/workbench.js',import.meta.url),'utf8'))
  .replace(/^import .*;\n/gm,'');
 
@@ -60,7 +62,7 @@ function createHarness({prepared,parseText,parseImages}){
  const flattenResume=resume=>resume.personal?.name?[{path:'personal.name',value:resume.personal.name}]:[];
  const completionStats=()=>({filled:1,total:1,missing:0,percent:100,sections:SECTIONS.map(s=>({key:s.key,filled:s.key==='personal'?1:0,total:s.key==='personal'?1:0,missing:0,percent:s.key==='personal'?100:0}))});
  const sandbox={
-  document,window:{addEventListener(){}},SECTIONS,createResume:name=>normalized({name}),normalizeResume:normalized,flattenResume,completionStats,
+  document,window:{addEventListener(){}},SECTIONS,getFieldHelp,splitRegions,createResume:name=>normalized({name}),normalizeResume:normalized,flattenResume,completionStats,
   loadState:async()=>state,saveResumes:async(resumes,activeId)=>{saved.push({resumes:structuredClone(resumes),activeId});},saveSettings:async()=>{},
   prepareResumeFiles:async(files,onProgress)=>{calls.prepare++;onProgress?.({stage:'pdf-text',current:1,total:1});return typeof prepared==='function'?prepared():prepared;},
   parseResumeText:async(text,settings)=>{calls.text.push({text,settings});return parseText(text,settings);},
@@ -116,4 +118,17 @@ test('AI parse failure does not save a new resume and the same preview can be re
 
  await h.nodes.get('parse').onclick();
  assert.equal(h.calls.text.length,2);assert.equal(h.saved.at(-1).resumes.length,2);assert.equal(h.saved.at(-1).resumes[1].name,'重试成功');assert.equal(h.nodes.get('importDialog').open,false,h.nodes.get('importStatus').textContent);
+});
+
+test('saving rejects six manually entered preferred cities without persisting and allows correction',async()=>{
+ const h=createHarness({});await tick();
+ h.state.resumes[0].job_intention={preferred_city:'城市一；城市二；城市三；城市四；城市五；城市六'};
+ await h.nodes.get('save').onclick();
+ assert.equal(h.saved.length,0);
+ assert.match(h.nodes.get('status').textContent,/期望城市最多填写 5 个/);
+ h.state.resumes[0].job_intention.preferred_city='广东省 / 深圳市；广东省 / 广州市';
+ await h.nodes.get('save').onclick();
+ assert.equal(h.saved.length,1);
+ assert.equal(h.saved[0].resumes[0].job_intention.preferred_city,'广东省 / 深圳市；广东省 / 广州市');
+ assert.equal(h.nodes.get('status').textContent,'已保存到本地');
 });

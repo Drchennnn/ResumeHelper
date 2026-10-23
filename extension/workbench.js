@@ -1,5 +1,8 @@
 import {SECTIONS,createResume,normalizeResume,flattenResume,completionStats} from './lib/model.js';
 import {loadState,saveResumes,saveSettings} from './lib/storage.js';
+import {createDateControl} from './lib/date-control.js';
+import {createCatalogControl,splitRegions} from './lib/catalog-control.js';
+import {getFieldHelp} from './lib/field-help.js';
 import {prepareResumeFiles} from './lib/documents.js';
 import {parseResumeText,parseResumeImages,requestJSON,endpoint} from './lib/ai.js';
 const $=id=>document.getElementById(id);let state,current,dirty=false,missingOnly=false,pendingImport=null,importBusy=false;
@@ -30,23 +33,42 @@ function list(){const node=$('resumeList');node.replaceChildren();for(const r of
 function select(){current=state.resumes.find(r=>r.id===state.activeId)||state.resumes[0];state.activeId=current.id;$('name').value=current.name;dirty=false;list();sections();status('资料已载入 · 本地保存');progress();}
 function fields(section,row,index){
  const grid=el('div',undefined,'grid');
+ const rendered=new Map();
+ const dateRange=()=>row.start_date&&row.end_date?`${row.start_date} ~ ${row.end_date}`:'';
  for(const f of section.fields){
-  const label=el('label',undefined,f.type==='textarea'?'wide':'');
-  const title=el('span',f.label);const hint=el('small','未填写','field-missing');title.append(hint);label.append(title);
-  const input=el(f.type==='textarea'?'textarea':f.type==='select'?'select':'input');
+  const id=`field-${section.key}-${index??'single'}-${f.key}`;
+  const region=f.key==='address'||['native_place','origin_place','household_address','archive_location','preferred_city','interview_city','school_city','target_city'].includes(f.key);
+  const label=el('div',undefined,`field ${f.type==='textarea'?'wide':''}`);
+  const title=el('label',f.label);title.htmlFor=id;const hint=el('small','未填写','field-missing');title.append(hint);label.append(title);
   const value=String(row[f.key]??'');
-  if(input.tagName==='SELECT'){
-   const options=[{value:'',label:'请选择'},...(f.options||[]).map(o=>typeof o==='object'?{value:String(o.value??o.label),label:String(o.label??o.value)}:{value:String(o),label:String(o)})];
-   if(value&&!options.some(o=>o.value===value))options.push({value,label:value});
-   for(const o of options){const option=el('option',o.label);option.value=o.value;input.append(option);}
-  }else if(input.tagName==='INPUT')input.type=['email','tel','url','number'].includes(f.type)?f.type:'text';
-  if(input.type==='number')input.step='any';input.value=value;input.maxLength=20000;input.id=`field-${section.key}-${index??'single'}-${f.key}`;
-  label.htmlFor=input.id;hint.hidden=Boolean(value.trim());label.classList.toggle('missing-field',!value.trim());
-  label.hidden=missingOnly&&Boolean(value.trim());
-  input.oninput=()=>{row[f.key]=input.value;hint.hidden=Boolean(input.value.trim());label.classList.toggle('missing-field',!input.value.trim());mark();};
-  label.append(input);
-  if(f.suggestions?.length){const choices=el('datalist');choices.id=input.id+'-choices';input.setAttribute('list',choices.id);input.placeholder='输入搜索或选择行业';for(const value of f.suggestions)choices.append(el('option',value));label.append(choices);}
-  grid.append(label);
+  const changed=next=>{
+   const previousRange=dateRange();
+   row[f.key]=next;hint.hidden=Boolean(String(next).trim());label.classList.toggle('missing-field',!String(next).trim());
+   if(['start_date','end_date'].includes(f.key)&&(!row.date_range||row.date_range===previousRange)){
+    row.date_range=dateRange();const range=rendered.get('date_range');if(range){range.input.value=row.date_range;range.hint.hidden=Boolean(row.date_range);range.container.classList.toggle('missing-field',!row.date_range);}
+   }
+   if(f.key==='degree')rendered.get('major_category')?.control?.refreshOptions?.();
+   mark();
+  };
+  let control,input;
+  if(f.type==='date'||f.type==='month'){
+   control=createDateControl({document,field:f,value,id,onChange:changed});input=control.querySelector('input.date-value');
+  }else if(region||f.key==='major_category'){
+   control=createCatalogControl({document,kind:region?'region':'major',value,id,label:f.label,multiple:f.key==='preferred_city',degree:()=>row.degree,onChange:changed});input=control.querySelector('input');
+  }else{
+   input=el(f.type==='textarea'?'textarea':f.type==='select'?'select':'input');
+   if(input.tagName==='SELECT'){
+    const options=[{value:'',label:'请选择'},...(f.options||[]).map(o=>typeof o==='object'?{value:String(o.value??o.label),label:String(o.label??o.value)}:{value:String(o),label:String(o)})];
+    if(value&&!options.some(o=>o.value===value))options.push({value,label:value});
+    for(const o of options){const option=el('option',o.label);option.value=o.value;input.append(option);}
+   }else if(input.tagName==='INPUT')input.type=['email','tel','url','number'].includes(f.type)?f.type:'text';
+   if(input.type==='number')input.step='any';input.value=value;input.maxLength=20000;input.id=id;input.oninput=()=>changed(input.value);control=input;
+  }
+  hint.hidden=Boolean(value.trim());label.classList.toggle('missing-field',!value.trim());label.hidden=missingOnly&&Boolean(value.trim());
+  label.append(control);
+  if(f.suggestions?.length){const choices=el('datalist');choices.id=id+'-choices';input.setAttribute('list',choices.id);input.placeholder='输入搜索或选择行业';for(const value of f.suggestions)choices.append(el('option',value));label.append(choices);}
+  const help=el('small',getFieldHelp(section.key,f),'field-help');help.id=id+'-help';input?.setAttribute('aria-describedby',help.id);label.append(help);
+  rendered.set(f.key,{input,hint,control,container:label});grid.append(label);
  }
  return grid;
 }
@@ -71,7 +93,7 @@ function sections(){
  }
  const extra=el('section',undefined,'card');extra.append(el('h2','补充资料'));const label=el('label','其他希望保留的信息');const area=el('textarea');area.value=current.extras||'';area.oninput=()=>{current.extras=area.value;mark();};label.append(area);extra.append(label);$('sections').append(extra);progress();
 }
-async function save(){current.name=$('name').value.trim()||'未命名简历';await saveResumes(state.resumes,state.activeId);dirty=false;list();status('已保存到本地');}
+async function save(){if(splitRegions(current.job_intention?.preferred_city).length>5)throw new Error('期望城市最多填写 5 个，请用分号分隔或选择任意城市');current.name=$('name').value.trim()||'未命名简历';await saveResumes(state.resumes,state.activeId);dirty=false;list();status('已保存到本地');}
 async function add(r){await save();r.id=crypto.randomUUID();state.resumes.push(normalizeResume(r));state.activeId=r.id;await saveResumes(state.resumes,state.activeId);select();}
 $('name').oninput=()=>{current.name=$('name').value;mark();};$('save').onclick=()=>action(save);$('form').onsubmit=e=>e.preventDefault();
 $('new').onclick=()=>action(()=>add(createResume(`简历 ${state.resumes.length+1}`)));$('duplicate').onclick=()=>action(()=>add({...structuredClone(current),name:current.name+' · 副本'}));

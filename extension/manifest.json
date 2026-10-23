@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "简历工作台 · 个人版",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "本地简历管理，PDF/图片简历识别，自定义模型 API，预览后填写当前页面。",
   "permissions": [
     "storage",
