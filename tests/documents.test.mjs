@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {Canvas,DOMMatrix,ImageData,Path2D} from '@napi-rs/canvas';
-import {prepareResumeFiles} from '../extension/lib/documents.js';
+import {normalizePdfText,prepareResumeFiles} from '../extension/lib/documents.js';
 
 const fixture=async name=>new File([await readFile(new URL(`../fixtures/${name}`,import.meta.url))],name);
 
@@ -25,6 +25,23 @@ function createPdf(pageCount){
  for(const offset of offsets)output+=`${String(offset).padStart(10,'0')} 00000 n \n`;
  return Buffer.from(output+`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
 }
+
+test('normalizes PDF glyph spacing only between Han characters on the same line',()=>{
+ const extracted=[
+  '教 育 背 景  ',
+  '香港 城 市大学',
+  '张 小 明',
+  'AI  Agent 2026 年',
+  'City University of Hong Kong',
+ ].join('\n');
+ assert.equal(normalizePdfText(extracted),[
+  '教育背景',
+  '香港城市大学',
+  '张小明',
+  'AI Agent 2026 年',
+  'City University of Hong Kong',
+ ].join('\n'));
+});
 
 test('extracts text and page metadata from a real local PDF without rendering text pages',async()=>{
  const result=await prepareResumeFiles([await fixture('fictional-resume.pdf')]);

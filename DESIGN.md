@@ -1,6 +1,6 @@
 # Design
 ## Source of truth
-Active · 2026-10-23. Personal Chrome MV3 extension. Reference: observed cv.playoffer.cn/resumes navigation and local extension 0.9.8 analysis. No existing app UI.
+Active · 2026-10-24. Personal Chrome MV3 extension. Reference: observed cv.playoffer.cn/resumes navigation and local extension 0.9.8 analysis. No existing app UI.
 ## Brand
 清晰、克制、个人工具。名称「简历工作台」。不使用原产品品牌或资源。
 ## Product goals
@@ -27,6 +27,9 @@ Active · 2026-10-23. Personal Chrome MV3 extension. Reference: observed cv.play
 ## Implementation constraints
 原生HTML/CSS/ES modules，无构建依赖。Node内置测试；独立测试表单。MV3外部脚本，严格CSP，无eval。支持JSON/TXT/MD、PDF和PNG/JPEG/WEBP。PDF.js固定版本本地打包与独立module worker，关闭WASM，不放宽CSP；PDF提取/扫描页渲染和图片压缩先本地进行。预览显示API接收方、模型、图片和可编辑文本；显式发送后保存为新简历，保留原简历。DOCX待后续适配。
 目录仅点击展开时读取包内JSON，运行时不访问外部目录服务。改变日期精度或学历保留旧值，只有明确选择替换；手填和海外数据始终可用。已有手填起止时间不随日期字段自动覆盖。
+## Page interaction contract
+DOM first：页面扫描包含可见布局中的屏外字段，填写逐项滚动、打开菜单、点击精确候选并读回结果。优先 aria-controls/owns 绑定菜单；执行点击后才允许唯一可见 portal。重复记录携带分区及序号，日期区间区分开始和结束。支持部分通用组件结构，不声明全网通用已完成。
+复杂交互失败时逐字段显示原因和下一步；手动展开、选区/辅助填写、资料复制作为恢复方式。停止终止等待和后续字段，已完成内容保留；填写后只复扫和本地匹配，下一轮仍需确认。条目添加独立显式触发，按事实数量且仅在已确认模块中执行；从不点击完成、提交、删除或同意声明。
 ## Open questions
 - [ ] 用户自定义API实际地址与模型未知；使用OpenAI兼容chat/completions协议并提供本地模拟验证。
 - [x] 已观察登录后原站字段元数据；仅保存标签与类型，不保留个人简历值。

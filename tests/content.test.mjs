@@ -39,6 +39,8 @@ class FakeElement {
     this.events = [];
     this.style = attributes.style || {};
     this.parent = attributes.parent || null;
+    this.parentElement = attributes.parent || null;
+    this.className = attributes.className || "";
     this.section = attributes.section || null;
     this.setterCalls = [];
     this.#value = attributes.value || "";
@@ -89,6 +91,15 @@ class FakeElement {
     return [];
   }
 
+  focus() {}
+
+  scrollIntoView() {}
+
+  click() {
+    this.onclick?.();
+    this.dispatchEvent(new FakeEvent("click", { bubbles: true }));
+  }
+
   dispatchEvent(event) {
     this.events.push(event.type);
     return true;
@@ -103,9 +114,19 @@ class FakeContainer extends FakeElement {
 
   querySelectorAll(selector) {
     if (selector === "*") return this.children;
+    if (selector.includes("[role='listbox']") || selector.includes("[role='tree']")) {
+      return this.children.filter((element) => (
+        (selector.includes("[role='listbox']") && element.getAttribute("role") === "listbox") ||
+        (selector.includes("[role='tree']") && element.getAttribute("role") === "tree")
+      ));
+    }
+    if (selector.includes("[role='option']")) {
+      return this.children.filter((element) => element.getAttribute("role") === "option");
+    }
     return this.children.filter((element) => {
       const tag = element.tagName.toLowerCase();
-      return ["input", "textarea", "select"].includes(tag) || element.isContentEditable;
+      return ["input", "textarea", "select", "button"].includes(tag) || element.isContentEditable ||
+        element.getAttribute("role") === "combobox" || element.getAttribute("aria-haspopup");
     });
   }
 }
@@ -160,15 +181,24 @@ function createHarness() {
       display: element.style.display || "block",
       visibility: element.style.visibility || "visible",
     }),
+    setTimeout,
+    clearTimeout,
   });
   vm.runInContext(contentSource, context);
 
   function send(message, sender = { id: chrome.runtime.id }) {
     let response;
+    let resolveAsync;
+    const responsePromise = new Promise((resolve) => { resolveAsync = resolve; });
+    let asynchronous = false;
     for (const listener of listeners) {
-      listener(message, sender, (value) => { response = value; });
+      const keepChannel = listener(message, sender, (value) => {
+        response = value;
+        resolveAsync(value);
+      });
+      if (keepChannel === true) asynchronous = true;
     }
-    return response;
+    return asynchronous ? responsePromise : response;
   }
 
   return { context, document, listeners, send };
@@ -209,7 +239,7 @@ test("SCAN returns labelled visible fields, options, sections, and stable IDs", 
   );
 });
 
-test("APPLY uses native setters, emits events, protects non-empty values, and validates choices", () => {
+test("APPLY uses native setters, emits events, protects non-empty values, and validates choices", async () => {
   const { document, send } = createHarness();
   const name = new FakeElement("input", { labels: [label("姓名")], maxLength: 4 });
   const email = new FakeElement("input", { name: "email", value: "keep@example.test" });
@@ -223,7 +253,7 @@ test("APPLY uses native setters, emits events, protects non-empty values, and va
   const fields = send({ type: "SCAN" }).fields;
   const id = (labelText) => fields.find((field) => field.label === labelText).id;
 
-  const response = send({
+  const response = await send({
     type: "APPLY",
     items: [
       { fieldId: id("姓名"), value: "ABCDE" },
@@ -239,16 +269,16 @@ test("APPLY uses native setters, emits events, protects non-empty values, and va
   assert.deepEqual(name.events, []);
   assert.equal(email.value, "keep@example.test");
   assert.equal(degree.value, "master");
-  assert.deepEqual(response.results.map((result) => [result.status, result.reason]), [
+  assert.deepEqual(plain(response.results.map((result) => [result.status, result.reason])), [
     ["skipped", "too_long"],
     ["skipped", "non_empty"],
-    ["applied", undefined],
+    ["applied", null],
     ["skipped", "checkbox_requires_boolean"],
     ["skipped", "radio_value_mismatch"],
   ]);
 });
 
-test("APPLY supports explicit boolean controls and overwrite", () => {
+test("APPLY supports explicit boolean controls and overwrite", async () => {
   const { document, send } = createHarness();
   const existing = new FakeElement("textarea", { value: "旧内容", labels: [label("项目")] });
   const consent = new FakeElement("input", { type: "checkbox", labels: [label("接收提醒")] });
@@ -256,7 +286,7 @@ test("APPLY supports explicit boolean controls and overwrite", () => {
   document.children.push(existing, consent, radio);
   const fields = send({ type: "SCAN" }).fields;
 
-  const response = send({
+  const response = await send({
     type: "APPLY",
     overwrite: true,
     items: [
@@ -272,7 +302,7 @@ test("APPLY supports explicit boolean controls and overwrite", () => {
   assert.ok(response.results.every((result) => result.status === "applied"));
 });
 
-test("dynamic fields can be scanned while detached and forged messages are rejected", () => {
+test("dynamic fields can be scanned while detached and forged messages are rejected", async () => {
   const { context, document, listeners, send } = createHarness();
   vm.runInContext(contentSource, context);
   assert.equal(listeners.length, 1, "second injection must not register another listener");
@@ -282,7 +312,7 @@ test("dynamic fields can be scanned while detached and forged messages are rejec
   const firstId = send({ type: "SCAN" }).fields[0].id;
   first.isConnected = false;
   document.children.splice(0, 1);
-  const detached = send({ type: "APPLY", items: [{ fieldId: firstId, value: "x" }] });
+  const detached = await send({ type: "APPLY", items: [{ fieldId: firstId, value: "x" }] });
   assert.equal(detached.results[0].reason, "detached_field");
 
   const dynamic = new FakeElement("input", { placeholder: "动态字段" });
@@ -305,7 +335,7 @@ test("SCAN includes fields in open shadow roots", () => {
   assert.equal(fields[0].label, "影子字段");
 });
 
-test("APPLY rejects disabled options and protects an already selected radio group", () => {
+test("APPLY rejects disabled options and protects an already selected radio group", async () => {
   const { document, send } = createHarness();
   const select = new FakeElement("select", {
     labels: [label("意向城市")],
@@ -327,7 +357,7 @@ test("APPLY rejects disabled options and protects an already selected radio grou
   document.children.push(select, selected, target);
   const fields = send({ type: "SCAN" }).fields;
 
-  const response = send({
+  const response = await send({
     type: "APPLY",
     items: [
       { fieldId: fields[0].id, value: "hk" },
@@ -343,7 +373,7 @@ test("APPLY rejects disabled options and protects an already selected radio grou
   assert.equal(target.checked, false);
 });
 
-test("APPLY verifies readback and isolates one field exception from later fields", () => {
+test("APPLY verifies readback and isolates one field exception from later fields", async () => {
   const { document, send } = createHarness();
   const reverted = new FakeElement("input", { labels: [label("被页面回滚")] });
   reverted.dispatchEvent = function dispatchAndRevert(event) {
@@ -361,7 +391,7 @@ test("APPLY verifies readback and isolates one field exception from later fields
   document.children.push(reverted, broken, rejectedCheck, healthy);
   const fields = send({ type: "SCAN" }).fields;
 
-  const response = send({
+  const response = await send({
     type: "APPLY",
     items: fields.map((field) => ({
       fieldId: field.id,
@@ -379,17 +409,17 @@ test("APPLY verifies readback and isolates one field exception from later fields
   assert.deepEqual(healthy.events, ["input", "change"]);
 });
 
-test('same-URL document reload cannot apply an old document field ID',()=>{
+test('same-URL document reload cannot apply an old document field ID',async()=>{
  const old=createHarness(),fresh=createHarness();
  const a=new FakeElement('input',{labels:[label('姓名')]}),b=new FakeElement('input',{labels:[label('姓名')]});
  old.document.children.push(a);fresh.document.children.push(b);
  const before=old.send({type:'SCAN'}).fields[0].id;const after=fresh.send({type:'SCAN'}).fields[0].id;
  assert.notEqual(before,after);
- assert.equal(fresh.send({type:'APPLY',items:[{fieldId:before,value:'wrong'}]}).results[0].reason,'unknown_field');
+ assert.equal((await fresh.send({type:'APPLY',items:[{fieldId:before,value:'wrong'}]})).results[0].reason,'unknown_field');
  assert.equal(b.value,'');
 });
 
-test('isolated bridge scans selected container and a single target without including assistant shadow UI',()=>{
+test('isolated bridge scans selected container and a single target without including assistant shadow UI',async()=>{
  const {context,document}=createHarness();
  const outside=new FakeElement('input',{'aria-label':'外部字段'});
  const scope=new FakeContainer('section');
@@ -405,6 +435,195 @@ test('isolated bridge scans selected container and a single target without inclu
  document.children.push(host);
  assert.ok(!bridge.scan().fields.some(f=>f.label==='助手开关'));
  const id=bridge.scan(inside).fields[0].id;
- assert.equal(bridge.apply([{fieldId:id,value:'局部填写'}],false)[0].status,'applied');
+ assert.equal((await bridge.apply([{fieldId:id,value:'局部填写'}],false))[0].status,'applied');
  assert.equal(outside.value,'');assert.equal(inside.value,'局部填写');
+});
+
+test('ARIA readonly combobox is scanned and APPLY clicks only an exact visible option',async()=>{
+ const {document,send}=createHarness();
+ const menu=new FakeContainer('div',{id:'degree-options'});menu.id='degree-options';
+ const bachelor=new FakeElement('div',{role:'option',textContent:'本科'});
+ const master=new FakeElement('div',{role:'option',textContent:'硕士'});
+ menu.children.push(bachelor,master);document.byId.set(menu.id,menu);
+ const combo=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-controls':menu.id,
+  'data-form-field-i18n-name':'学历',placeholder:'请选择学历',
+ });
+ master.onclick=()=>{combo.value='硕士';master.attributes['aria-selected']='true';};
+ document.children.push(combo,menu);
+ const fields=send({type:'SCAN'}).fields;
+ assert.equal(fields.length,1);
+ assert.equal(fields[0].label,'学历');
+ assert.equal(fields[0].type,'combobox');
+ assert.deepEqual(plain(fields[0].options),[
+  {value:'本科',label:'本科'},
+  {value:'硕士',label:'硕士'},
+ ]);
+ const result=await send({type:'APPLY',items:[{fieldId:fields[0].id,value:'硕士'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(combo.value,'硕士');
+ assert.ok(master.events.includes('pointerdown'));
+ assert.ok(!bachelor.events.includes('click'));
+});
+
+test('custom combobox waits for an asynchronously rendered exact option',async()=>{
+ const {document,send}=createHarness();
+ const menu=new FakeContainer('div',{id:'city-options'});menu.id='city-options';document.byId.set(menu.id,menu);
+ const combo=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-controls':menu.id,'aria-label':'期望城市',
+ });
+ combo.onclick=()=>setTimeout(()=>{
+  if(menu.children.length)return;
+  const option=new FakeElement('div',{role:'option',textContent:'深圳'});
+  option.onclick=()=>{combo.value='深圳';option.attributes['aria-selected']='true';};
+  menu.children.push(option);
+ },20);
+ document.children.push(combo,menu);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'深圳'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(combo.value,'深圳');
+});
+
+test('bridge cancel stops an in-flight custom control wait',async()=>{
+ const {context,document,send}=createHarness();
+ const emptyMenu=new FakeContainer('div',{id:'empty-options'});emptyMenu.id='empty-options';document.byId.set(emptyMenu.id,emptyMenu);
+ const combo=new FakeElement('input',{role:'combobox',readonly:'',readOnly:true,'aria-controls':emptyMenu.id,'aria-label':'学历'});
+ document.children.push(combo,emptyMenu);
+ const field=send({type:'SCAN'}).fields[0];
+ const pending=context.__personalResumeBridge.apply([{fieldId:field.id,value:'硕士'}],false);
+ setTimeout(()=>context.__personalResumeBridge.cancel(),20);
+ const results=await pending;
+ assert.equal(results[0].reason,'cancelled');
+});
+
+test('multi-select combobox applies semicolon-delimited choices one by one',async()=>{
+ const {document,send}=createHarness();
+ const menu=new FakeContainer('div',{id:'multi-city-options'});menu.id='multi-city-options';
+ const wrapper=new FakeContainer('div');const multipleMarker={};const selected=[];
+ const combinedSelection={get textContent(){return selected.join('；');}};
+ wrapper.querySelector=selector=>selector.includes('selector-multiple')?multipleMarker:null;
+ wrapper.querySelectorAll=selector=>selector.includes('selectItem')?[combinedSelection]:[];
+ const combo=new FakeElement('input',{role:'combobox',readonly:'',readOnly:true,'aria-controls':menu.id,'aria-label':'期望地点'});
+ const baseClosest=combo.closest.bind(combo);
+ combo.closest=selector=>selector.includes('.ud__select')?wrapper:baseClosest(selector);
+ for(const city of ['深圳','北京']){
+  const option=new FakeElement('div',{role:'option',textContent:city});
+  option.onclick=()=>{option.attributes['aria-selected']='true';selected.push(city);};
+  menu.children.push(option);
+ }
+ document.byId.set(menu.id,menu);document.children.push(combo,menu);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'深圳；北京'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.deepEqual(selected,['深圳','北京']);
+});
+
+test('SCAN does not copy one detached portal menu onto unrelated closed comboboxes',()=>{
+ const {document,send}=createHarness();
+ const closed=new FakeElement('input',{role:'combobox',readonly:'',readOnly:true,'aria-label':'学历'});
+ const open=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-label':'政治面貌','aria-expanded':'true',
+ });
+ const popup=new FakeContainer('div',{role:'listbox'});
+ popup.children.push(new FakeElement('div',{role:'option',textContent:'群众'}));
+ document.children.push(closed,open,popup);
+ const fields=send({type:'SCAN'}).fields;
+ assert.equal(fields.find(field=>field.label==='学历').options,undefined);
+ assert.deepEqual(plain(fields.find(field=>field.label==='政治面貌').options),[
+  {value:'群众',label:'群众'},
+ ]);
+});
+
+test('inline custom control can use its single visible portal when no aria ownership exists',async()=>{
+ const {document,send}=createHarness();
+ const inline=new FakeContainer('div');
+ const popup=new FakeContainer('div',{role:'listbox'});
+ const option=new FakeElement('div',{role:'option',textContent:'硕士'});
+ const combo=new FakeElement('input',{role:'combobox',readonly:'',readOnly:true,'aria-label':'学历'});
+ const baseClosest=combo.closest.bind(combo);
+ combo.closest=selector=>selector.includes('.ud__select')?inline:baseClosest(selector);
+ option.onclick=()=>{combo.value='硕士';option.attributes['aria-selected']='true';};
+ popup.children.push(option);document.children.push(combo,popup);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'硕士'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(combo.value,'硕士');
+});
+
+test('tree cascader selects an exact province city district path with explicit suffix aliases',async()=>{
+ const {document,send}=createHarness();
+ const popup=new FakeContainer('div',{role:'tree'});
+ const combo=new FakeElement('input',{role:'combobox','aria-haspopup':'tree',readonly:'',readOnly:true,'aria-label':'居住地址'});
+ const option=text=>new FakeElement('div',{role:'option',textContent:text});
+ const province=option('广东'),city=option('深圳'),district=option('南山');
+ province.onclick=()=>{popup.children=[city];};
+ city.onclick=()=>{popup.children=[district];};
+ district.onclick=()=>{combo.value='广东 / 深圳 / 南山';district.attributes['aria-selected']='true';};
+ popup.children=[province];document.children.push(combo,popup);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'广东省 / 深圳市 / 南山区'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(combo.value,'广东 / 深圳 / 南山');
+ assert.ok(province.events.includes('click')&&city.events.includes('click')&&district.events.includes('click'));
+});
+
+test('repeated records get their index from the enclosing collection instead of their immediate parent',()=>{
+ const {document,send}=createHarness();
+ const collection=new FakeContainer('section');
+ const recordsParent={closest:()=>collection};
+ const firstRecord=new FakeContainer('div'),secondRecord=new FakeContainer('div');
+ collection.querySelectorAll=selector=>selector.includes('apply-form-array-card-content')?[firstRecord,secondRecord]:[];
+ firstRecord.parentElement=recordsParent;secondRecord.parentElement=recordsParent;
+ const school=new FakeElement('input',{'aria-label':'学校名称','data-form-field-name':'school'});
+ const baseClosest=school.closest.bind(school);
+ school.closest=selector=>selector.includes('apply-form-array-card-content')?secondRecord:baseClosest(selector);
+ document.children.push(school);
+ const field=send({type:'SCAN'}).fields[0];
+ assert.equal(field.fieldKey,'school');assert.equal(field.groupIndex,1);assert.equal(field.groupCount,2);
+});
+
+test('UD month range picker navigates by year, clicks the requested month, and reads back',async()=>{
+ const {document,send}=createHarness();
+ const start=new FakeElement('input',{'aria-label':'入学时间'});
+ const end=new FakeElement('input',{'aria-label':'毕业时间'});
+ const range={querySelectorAll:selector=>selector==='input'?[start,end]:[]};
+ const baseStartClosest=start.closest.bind(start),baseEndClosest=end.closest.bind(end);
+ start.closest=selector=>selector.includes('date-range-picker')||selector.includes('DateRangePicker')||selector.includes('throne-biz-date-range')?range:baseStartClosest(selector);
+ end.closest=selector=>selector.includes('date-range-picker')||selector.includes('DateRangePicker')||selector.includes('throne-biz-date-range')?range:baseEndClosest(selector);
+ const controls=new FakeContainer('div');
+ const headerContent=new FakeContainer('div');headerContent.parentElement=controls;
+ let displayedYear=2026;
+ let header;
+ const renderHeader=()=>{
+  header=new FakeElement('button',{textContent:`${displayedYear}年`});
+  header.parentElement=headerContent;
+  header.closest=selector=>selector==='.ud__picker-panel-header-inner'?controls:null;
+  headerContent.children=[header];
+ };
+ renderHeader();
+ const left=new FakeElement('button'),right=new FakeElement('button');
+ left.querySelector=selector=>selector.includes('LeftBoldOutlined')?{}:null;
+ right.querySelector=selector=>selector.includes('RightBoldOutlined')?{}:null;
+ left.onclick=()=>{displayedYear-=1;renderHeader();};
+ right.onclick=()=>{displayedYear+=1;renderHeader();};
+ controls.children.push(left,headerContent,right);
+ const months=Array.from({length:12},(_,index)=>new FakeElement('div',{textContent:`${String(index+1).padStart(2,'0')}月`}));
+ months[8].onclick=()=>{start.value='2024-09';};
+ const originalQuery=document.querySelectorAll.bind(document);
+ document.querySelectorAll=selector=>{
+  if(selector==='.ud__picker-panel-header-btn')return[header];
+  if(selector.includes('.ud__picker-month-panel-cell'))return months;
+  return originalQuery(selector);
+ };
+ document.children.push(start,end);
+ const fields=send({type:'SCAN'}).fields;
+ assert.deepEqual(plain(fields.map(field=>[field.label,field.type])),[
+  ['入学时间（开始）','date-picker'],['毕业时间（结束）','date-picker'],
+ ]);
+ const result=await send({type:'APPLY',items:[{fieldId:fields[0].id,value:'2024-09'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(start.value,'2024-09');
+ assert.equal(left.events.filter(type=>type==='click').length,2);
+ assert.ok(months[8].events.includes('click'));
 });

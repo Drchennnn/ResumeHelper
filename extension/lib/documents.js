@@ -189,6 +189,13 @@ function appendPageItems(output,items,remaining){
  }
  return used;
 }
+export function normalizePdfText(text){
+ return String(text||'')
+  .replace(/[ \t]+\n/g,'\n')
+  .replace(/[ \t]{2,}/g,' ')
+  .replace(/(\p{Script=Han})[ \t]+(?=\p{Script=Han})/gu,'$1')
+  .trim();
+}
 async function pageText(page,remaining){
  const reader=page.streamTextContent({disableNormalization:false}).getReader(),output=[];
  let used=0,done=false;
@@ -200,7 +207,7 @@ async function pageText(page,remaining){
   }
  }finally{if(!done)reader.cancel(new Error('PDF text budget reached')).catch(()=>{});}
  const text=output.join('');
- return {text:text.replace(/[ \t]+\n/g,'\n').replace(/[ \t]{2,}/g,' ').trim(),used};
+ return {text:normalizePdfText(text),used};
 }
 async function renderPage(page){
  const operators=await page.getOperatorList();
