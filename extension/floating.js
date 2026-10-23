@@ -66,6 +66,7 @@
           <button class="secondary local" type="button">仅本地识别（不调用 API）</button>
           <button class="action secondary-action assist" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>辅助填写</button>
           <button class="action secondary-action prepare" type="button">补齐经历条目并重新识别</button>
+          <button class="secondary attachments" type="button">管理本地附件</button>
           <button class="secondary stop" type="button" hidden>停止当前操作</button>
         </div>
         <p class="control-help api-detail">AI 匹配会发送字段说明、经历上下文及所选简历资料至配置的 API；请先检查预览。</p>
@@ -169,6 +170,9 @@
       option_not_found: "未找到匹配选项",
       custom_menu_needs_manual_open: "自定义下拉需要手动打开",
       unsupported_custom_date_panel: "日期面板暂不支持自动操作",
+      date_precision_required: "网页要求具体日期，简历只提供了年月，请确认具体日后重试",
+      date_present_unavailable: "网页未提供“至今”选项，请确认应填写的结束日期",
+      site_confirmation_required: "网页出现需要确认的提示，已停止后续填写，请先处理提示再重新识别",
       option_disabled: "匹配选项不可用",
       value_mismatch: "页面没有接受填写结果",
       unknown_field: "页面字段已经变化",
@@ -204,8 +208,11 @@
     for (const entry of pending) {
       const item = document.createElement("li");
       const label = fields.get(entry.fieldId)?.label || "未命名字段";
-      const reason = reasonLabels[entry.reason] || (/[\u4e00-\u9fff]/.test(entry.reason || "") ? String(entry.reason).slice(0, 180) : "页面未完成自动填写");
-      const next = manualReasons.has(entry.reason)
+      const categoryReason = /^cascader_(?:option|level)_/.test(entry.reason || "") ? "网页目录缺少可唯一匹配的专业或地区层级" : "";
+      const reason = reasonLabels[entry.reason] || categoryReason || (/[\u4e00-\u9fff]/.test(entry.reason || "") ? String(entry.reason).slice(0, 180) : "页面未完成自动填写");
+      const next = ["date_precision_required", "date_present_unavailable"].includes(entry.reason)
+        ? "请在资料中补充具体日期，或直接在网页确认选择"
+        : manualReasons.has(entry.reason)
         ? "手动打开下拉或日期后重试；仍失败可辅助填写复制资料自行选择"
         : "请重新识别后重试；仍失败可用辅助填写复制资料手动完成";
       item.textContent = `${label}：${reason}。${next}`;
@@ -477,6 +484,10 @@
   ui.edit.onclick = (event) => {
     if (!event.isTrusted) return;
     return task(async () => { await message({ type: "OPEN_WORKBENCH" }); setStatus("已打开简历工作台"); });
+  };
+  $(".attachments").onclick = (event) => {
+    if (!event.isTrusted) return;
+    return task(async () => { await message({type:"OPEN_ATTACHMENTS",resumeId:ui.resume.value}); setStatus("已打开本地附件库；给网页选择文件请使用扩展图标的附件功能"); });
   };
   ui.scan.onclick = (event) => { if (event.isTrusted) return task(() => scan(undefined, { useAI: true })); };
   ui.local.onclick = (event) => { if (event.isTrusted) return task(() => scan()); };

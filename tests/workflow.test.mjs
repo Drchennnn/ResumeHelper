@@ -34,7 +34,7 @@ class FakeElement {
     const found = [];
     const visit = (node) => {
       for (const child of node.children) {
-        if (selector === "button" && child.tagName === "BUTTON") found.push(child);
+        if (selector === "button,[role='button']" && (child.tagName === "BUTTON" || child.getAttribute("role") === "button")) found.push(child);
         if (selector === "details" && child.tagName === "DETAILS") found.push(child);
         if (selector.includes("apply-form-array-card-content") && (String(child.className || "").includes("apply-form-array-card-content") || String(child.className || "").includes("formGroupItem"))) found.push(child);
         visit(child);
@@ -50,6 +50,13 @@ function button(text, type = "button", onclick = () => {}) {
   const item = new FakeElement("button", text);
   item.type = type;
   item.setAttribute("type", type);
+  item.click = () => { item.clicks += 1; onclick(); };
+  return item;
+}
+
+function roleButton(tagName, text, attributes = {}, onclick = () => {}) {
+  const item = new FakeElement(tagName, text);
+  for (const [name, value] of Object.entries(attributes)) item.setAttribute(name, value);
   item.click = () => { item.clicks += 1; onclick(); };
   return item;
 }
@@ -170,4 +177,37 @@ test("JD repeatable sections require both the site and confirmed title before ad
   heading.textContent = "提交申请";
   assert.equal((await api.prepare({education: 3})).added, 0);
   assert.equal(add.clicks, 1);
+});
+
+test("JD confirmed section supports a non-navigation anchor role button", async () => {
+  const root = new FakeElement("section");
+  root.className = "gridContainer___test";
+  const heading = new FakeElement("h2", "教育经历（必填）");
+  root.querySelector = selector => selector.includes("titleContainer") ? heading : null;
+  const makeRow = () => { const row = new FakeElement("div"); row.className = "formGroupItem___test"; return row; };
+  root.append(makeRow());
+  const add = roleButton("a", "+ 添加", {role: "button", class: "am-button addBtn___3r3aQ", "aria-disabled": "false"}, () => root.append(makeRow()));
+  const label = new FakeElement("span", "+ 添加");
+  add.append(label);
+  root.append(add);
+
+  const {api} = harness([["edu", root]], [], "campus.jd.com");
+  const result = await api.prepare({education: 2});
+
+  assert.equal(result.added, 1);
+  assert.equal(add.clicks, 1);
+  assert.equal(result.sections.find(item => item.key === "education").after, 2);
+});
+
+test("role add controls reject aria-disabled and navigation anchors", async () => {
+  const root = new FakeElement("section");
+  const disabled = roleButton("a", "+ 添加", {role: "button", "aria-disabled": "true"}, () => { throw new Error("disabled control must never run"); });
+  const navigation = roleButton("a", "+ 添加", {role: "button", href: "/resume/new"}, () => { throw new Error("navigation anchor must never run"); });
+  root.append(disabled, navigation);
+  const {api} = harness([["formily-item-education_list", root]]);
+
+  const result = await api.prepare({education: 1});
+  const education = result.sections.find(item => item.key === "education");
+  assert.equal(education.status, "no_safe_add_button");
+  assert.equal(disabled.clicks + navigation.clicks, 0);
 });

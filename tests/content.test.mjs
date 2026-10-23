@@ -125,8 +125,11 @@ class FakeContainer extends FakeElement {
         (selector.includes("[role='tree']") && element.getAttribute("role") === "tree")
       ));
     }
-    if (selector.includes("[role='option']")) {
-      return this.children.filter((element) => element.getAttribute("role") === "option");
+    if (selector.includes("[role='option']") || selector.includes("[role='menuitem']")) {
+      return this.children.filter((element) => (
+        (selector.includes("[role='option']") && element.getAttribute("role") === "option") ||
+        (selector.includes("[role='menuitem']") && element.getAttribute("role") === "menuitem")
+      ));
     }
     return this.children.filter((element) => {
       const tag = element.tagName.toLowerCase();
@@ -676,6 +679,91 @@ test('JD-style CSS modules expose semantic label, section, record context and he
  assert.equal(field.value,'','placeholder must not be treated as an existing value');
 });
 
+test('Ant 3 school selections ignore prompt text and expose the selected record anchor',()=>{
+ const {document,send}=createHarness();
+ const collection=new FakeContainer('div');
+ const recordsParent={closest:()=>collection};
+ const record=new FakeContainer('div',{className:'formGroupItem___education'});record.parentElement=recordsParent;
+ collection.querySelectorAll=selector=>selector.includes('formGroupItem')?[record]:[];
+ const selectRoot=new FakeContainer('div',{className:'ant-select'});
+ const selected={textContent:''};
+ selectRoot.querySelectorAll=selector=>selector.includes('ant-select-selection-selected-value')
+  ?(selected.textContent?[selected]:[]):[];
+ const school=new FakeContainer('div',{
+  role:'combobox',className:'ant-select-selection--single','aria-label':'学校名称',textContent:'请填写学校名称',
+ });
+ const major=new FakeElement('input',{'aria-label':'专业名称'});
+ const baseSchool=school.closest.bind(school),baseMajor=major.closest.bind(major);
+ school.closest=selector=>selector.includes('.ant-select')?selectRoot:selector.includes('formGroupItem')?record:baseSchool(selector);
+ major.closest=selector=>selector.includes('formGroupItem')?record:baseMajor(selector);
+ record.querySelector=()=>null;
+ record.querySelectorAll=selector=>selector.includes('input')||selector.includes("[role='combobox']")?[school,major]:[];
+ document.children.push(major);
+ let field=send({type:'SCAN'}).fields[0];
+ assert.equal(field.recordLabel,undefined,'prompt text must not identify an empty education record');
+ selected.textContent='北京邮电大学';school.textContent='请填写学校名称北京邮电大学';
+ field=send({type:'SCAN'}).fields[0];
+ assert.equal(field.recordLabel,'北京邮电大学');
+ const realInput=new FakeElement('input',{
+  role:'combobox',value:'香港城市大学','aria-label':'另一学校',textContent:'请填写学校名称',
+ });
+ document.children=[realInput];
+ assert.equal(send({type:'SCAN'}).fields[0].value,'香港城市大学','real input values take precedence over prompt text');
+});
+
+test('occupied records without an identity anchor are not treated as blank records',()=>{
+ const {document,send}=createHarness();
+ const collection=new FakeContainer('div');
+ const recordsParent={closest:()=>collection};
+ const occupied=new FakeContainer('div',{className:'formGroupItem___campus'});
+ const blank=new FakeContainer('div',{className:'formGroupItem___campus'});
+ occupied.parentElement=recordsParent;blank.parentElement=recordsParent;
+ collection.querySelectorAll=selector=>selector.includes('formGroupItem')?[occupied,blank]:[];
+
+ const oldDescription=new FakeElement('textarea',{value:'已有但缺少活动名称的旧内容','aria-label':'活动描述'});
+ const occupiedName=new FakeElement('input',{'aria-label':'活动名称'});
+ const blankName=new FakeElement('input',{'aria-label':'活动名称'});
+ const blankRadio=new FakeElement('input',{type:'radio',value:'1','aria-label':'是'});
+ const blankSelect=new FakeElement('select',{'aria-label':'类型',options:[{value:'',textContent:'请选择'}]});
+ occupied.querySelector=blank.querySelector=()=>null;
+ occupied.querySelectorAll=selector=>selector.includes('input')||selector.includes('textarea')||selector.includes('select')
+  ?[occupiedName,oldDescription]:[];
+ blank.querySelectorAll=selector=>selector.includes('input')||selector.includes('textarea')||selector.includes('select')
+  ?[blankName,blankRadio,blankSelect]:[];
+ const baseOccupied=occupiedName.closest.bind(occupiedName),baseBlank=blankName.closest.bind(blankName);
+ occupiedName.closest=selector=>selector.includes('formGroupItem')?occupied:baseOccupied(selector);
+ blankName.closest=selector=>selector.includes('formGroupItem')?blank:baseBlank(selector);
+ document.children.push(occupiedName,blankName);
+
+ const fields=send({type:'SCAN'}).fields;
+ assert.equal(fields[0].recordLabel,'未识别的已有记录');
+ assert.equal(fields[1].recordLabel,undefined,'a genuinely empty record remains assignable');
+});
+
+test('JD program and campus containers keep their own sections',()=>{
+ const {document,send}=createHarness();
+ const makeSection=(id,title,labelText)=>{
+  const section=new FakeContainer('section',{id,className:'gridContainer___fixture'});section.id=id;
+  section.closest=selector=>selector.includes('gridContainer')?section:null;
+  section.querySelector=selector=>selector.includes('title')?{textContent:title}:null;
+  const item=new FakeContainer('div',{className:'fieldItem___fixture'});item.parentElement=section;
+  item.querySelector=selector=>selector.includes('filedName')?{textContent:labelText}:null;
+  const field=new FakeElement('textarea');
+  const baseClosest=field.closest.bind(field);
+  field.closest=selector=>selector.includes('fieldItem')?item:baseClosest(selector);
+  return field;
+ };
+ document.children.push(
+  makeSection('program','项目经历','项目经历描述'),
+  makeSection('campus','校园经历','校园经历描述'),
+ );
+ const fields=send({type:'SCAN'}).fields;
+ assert.deepEqual(plain(fields.map(field=>[field.label,field.section])),[
+  ['项目经历描述','项目经历'],['校园经历描述','校园经历'],
+ ]);
+ assert.notEqual(fields[0].section,fields[1].section);
+});
+
 test('radio controls use their group title instead of exposing only the choice label',()=>{
  const {document,send}=createHarness();
  const container=new FakeContainer('div',{className:'fieldItem___gender'});
@@ -687,6 +775,294 @@ test('radio controls use their group title instead of exposing only the choice l
  const field=send({type:'SCAN'}).fields[0];
  assert.equal(field.label,'性别：男');
  assert.deepEqual(plain(field.options),[{value:'male',label:'男'}]);
+});
+
+test('highest-degree radios keep their group title and select the matching boolean choice',async()=>{
+ const {document,send}=createHarness();
+ const container=new FakeContainer('div',{className:'fieldItem___highest'});
+ container.querySelector=selector=>selector.includes('filedName')?{textContent:'是否最高学历'}:null;
+ const group=new FakeContainer('div',{className:'ant-radio-group'});
+ const yes=new FakeElement('input',{type:'radio',value:'1','aria-label':'是'});
+ const no=new FakeElement('input',{type:'radio',value:'0','aria-label':'否',checked:true});
+ group.children.push(yes,no);
+ const baseYes=yes.closest.bind(yes),baseNo=no.closest.bind(no);
+ yes.closest=selector=>selector.includes('fieldItem')?container:selector.includes('radio-group')?group:baseYes(selector);
+ no.closest=selector=>selector.includes('fieldItem')?container:selector.includes('radio-group')?group:baseNo(selector);
+ document.children.push(yes,no);
+ const fields=send({type:'SCAN'}).fields;
+ assert.deepEqual(plain(fields.map(field=>field.label)),['是否最高学历：是','是否最高学历：否']);
+ assert.deepEqual(plain(fields.map(field=>field.options[0])),[
+  {value:'1',label:'是'},{value:'0',label:'否'},
+ ]);
+ const result=await send({type:'APPLY',items:[{fieldId:fields[0].id,value:true}],overwrite:true});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(yes.checked,true);assert.equal(no.checked,false,'no-name Ant radios must remain mutually exclusive');
+ assert.ok(yes.events.includes('click'),'controlled radio should receive a click');
+ assert.deepEqual(no.events,[],'cleared peer must not receive a second synthetic change');
+ assert.equal(yes.events.filter(type=>type==='input').length,1,'fallback emits one input event');
+ assert.equal(yes.events.filter(type=>type==='change').length,1,'fallback emits one change event');
+ const verified=send({type:'CONTROL_VERIFY',fieldId:fields[0].id,value:true});
+ assert.equal(verified.verified,true);
+ const reverse=await send({type:'APPLY',items:[{fieldId:fields[1].id,value:false}],overwrite:true});
+ assert.equal(reverse.results[0].status,'applied',JSON.stringify(reverse));
+ assert.equal(no.checked,true);assert.equal(yes.checked,false,'reverse overwrite must not leave both choices checked');
+});
+
+test('highest-degree switch confirms only the exact JD modal once and continues the batch',async()=>{
+ const {document,send}=createHarness();
+ const container=new FakeContainer('div',{className:'fieldItem___highest'});
+ container.querySelector=selector=>selector.includes('filedName')?{textContent:'是否最高学历'}:null;
+ const group=new FakeContainer('div',{className:'ant-radio-group'});
+ const yes=new FakeElement('input',{type:'radio',value:'1','aria-label':'是'});
+ const no=new FakeElement('input',{type:'radio',value:'0','aria-label':'否',checked:true});
+ const following=new FakeElement('input',{'aria-label':'专业名称'});
+ group.children.push(yes,no);
+ const baseYes=yes.closest.bind(yes),baseNo=no.closest.bind(no);
+ yes.closest=selector=>selector.includes('fieldItem')?container:selector.includes('radio-group')?group:baseYes(selector);
+ no.closest=selector=>selector.includes('fieldItem')?container:selector.includes('radio-group')?group:baseNo(selector);
+ const modal=new FakeContainer('div',{className:'ant-modal-confirm'});
+ const prompt={textContent:'已选择另一学历为最高学历，请确认是否修改？'};
+ const confirm=new FakeElement('button',{textContent:'确认'});
+ modal.querySelector=selector=>selector.includes('ant-modal-confirm-content')?prompt:null;
+ modal.querySelectorAll=selector=>selector==='button'?[confirm]:[];
+ const originalQuery=document.querySelectorAll.bind(document);
+ document.querySelectorAll=selector=>selector.includes('.ant-modal-confirm')&&modal.style.display!=='none'
+  ?[modal]:originalQuery(selector);
+ yes.click=()=>{
+  yes.checked=true;no.checked=false;
+  yes.dispatchEvent(new FakeEvent('click',{bubbles:true}));
+ };
+ confirm.onclick=()=>{modal.style.display='none';};
+ document.children.push(yes,no,following);
+ const fields=send({type:'SCAN'}).fields;
+ const yesField=fields.find(field=>field.label==='是否最高学历：是');
+ const followingField=fields.find(field=>field.label==='专业名称');
+ const result=await send({
+  type:'APPLY',overwrite:true,
+  items:[{fieldId:yesField.id,value:true},{fieldId:followingField.id,value:'人工智能'}],
+ });
+ assert.deepEqual(plain(result.results.map(({status,reason})=>[status,reason])),[
+  ['applied',null],['applied',null],
+ ]);
+ assert.equal(yes.events.filter(type=>type==='click').length,1,'radio receives one native click');
+ assert.equal(confirm.events.filter(type=>type==='click').length,1,'recognized confirmation is accepted once');
+ assert.equal(following.value,'人工智能');
+});
+
+test('unknown highest-degree confirmation stops the remaining batch without clicking generic buttons',async()=>{
+ const {document,send}=createHarness();
+ const container=new FakeContainer('div',{className:'fieldItem___highest'});
+ container.querySelector=selector=>selector.includes('filedName')?{textContent:'是否最高学历'}:null;
+ const group=new FakeContainer('div',{className:'ant-radio-group'});
+ const yes=new FakeElement('input',{type:'radio',value:'1','aria-label':'是'});
+ const no=new FakeElement('input',{type:'radio',value:'0','aria-label':'否',checked:true});
+ const following=new FakeElement('input',{'aria-label':'专业名称'});
+ group.children.push(yes,no);
+ const baseYes=yes.closest.bind(yes),baseNo=no.closest.bind(no);
+ yes.closest=selector=>selector.includes('fieldItem')?container:selector.includes('radio-group')?group:baseYes(selector);
+ no.closest=selector=>selector.includes('fieldItem')?container:selector.includes('radio-group')?group:baseNo(selector);
+ const modal=new FakeContainer('div',{className:'ant-modal-confirm'});
+ const prompt={textContent:'已选择另一学历为最高学历，请确认是否修改？'};
+ const generic=new FakeElement('button',{textContent:'继续'});
+ modal.querySelector=selector=>selector.includes('ant-modal-confirm-content')?prompt:null;
+ modal.querySelectorAll=selector=>selector==='button'?[generic]:[];
+ const originalQuery=document.querySelectorAll.bind(document);
+ document.querySelectorAll=selector=>selector.includes('.ant-modal-confirm')?[modal]:originalQuery(selector);
+ yes.click=()=>{yes.checked=true;no.checked=false;yes.dispatchEvent(new FakeEvent('click',{bubbles:true}));};
+ document.children.push(yes,no,following);
+ const fields=send({type:'SCAN'}).fields;
+ const result=await send({
+  type:'APPLY',overwrite:true,
+  items:[
+   {fieldId:fields.find(field=>field.label==='是否最高学历：是').id,value:true},
+   {fieldId:fields.find(field=>field.label==='专业名称').id,value:'人工智能'},
+  ],
+ });
+ assert.deepEqual(plain(result.results.map(({status,reason})=>[status,reason])),[
+  ['skipped','site_confirmation_required'],['skipped','site_confirmation_required'],
+ ]);
+ assert.equal(generic.events.includes('click'),false);
+ assert.equal(following.value,'');
+});
+
+test('JD camelCase date range scans and verifies both readonly endpoints independently',()=>{
+ const {document,send}=createHarness();
+ const range=new FakeContainer('div',{className:'dateRangePicker___hash'});
+ const start=new FakeElement('input',{readonly:'',readOnly:true,placeholder:'开始日期',value:'2024-09-01'});
+ const end=new FakeElement('input',{readonly:'',readOnly:true,placeholder:'结束日期',value:'2027-10-01'});
+ range.querySelectorAll=selector=>selector==='input'?[start,end]:[];
+ const fieldItem=new FakeContainer('div',{className:'fieldItem___dates'});
+ fieldItem.querySelector=selector=>selector.includes('filedName')?{textContent:'起止时间'}:null;
+ const baseStart=start.closest.bind(start),baseEnd=end.closest.bind(end);
+ start.closest=selector=>selector.includes('dateRangePicker')?range:selector.includes('fieldItem')?fieldItem:baseStart(selector);
+ end.closest=selector=>selector.includes('dateRangePicker')?range:selector.includes('fieldItem')?fieldItem:baseEnd(selector);
+ document.children.push(start,end);
+ const fields=send({type:'SCAN'}).fields;
+ assert.deepEqual(plain(fields.map(field=>[field.label,field.type,field.value])),[
+  ['起止时间（开始）','date-picker','2024-09-01'],
+  ['起止时间（结束）','date-picker','2027-10-01'],
+ ]);
+ assert.equal(send({type:'CONTROL_VERIFY',fieldId:fields[0].id,value:'2024-09-01'}).verified,true);
+ assert.equal(send({type:'CONTROL_VERIFY',fieldId:fields[0].id,value:'2027-10-01'}).verified,false);
+ assert.equal(send({type:'CONTROL_VERIFY',fieldId:fields[1].id,value:'2027-10-01'}).verified,true);
+});
+
+test('Ant professional cascader drops professional-degree prefixes and accepts related-category aliases',async()=>{
+ const {document,send}=createHarness();
+ const popup=new FakeContainer('div',{id:'major-menus'});popup.id='major-menus';
+ const wrapper=new FakeContainer('span',{className:'ant-cascader-picker'});
+ const selected={textContent:''};
+ wrapper.querySelectorAll=selector=>selector.includes('ant-cascader-picker-label')?[selected]:[];
+ const combo=new FakeElement('input',{
+  className:'ant-cascader-input',readonly:'',readOnly:true,'aria-controls':popup.id,'aria-label':'专业类别',
+ });
+ const science=new FakeElement('li',{role:'menuitem',title:'理学',textContent:'理学'});
+ const math=new FakeElement('li',{role:'menuitem',title:'数学相关类',textContent:'数学相关类'});
+ science.onclick=()=>{popup.children=[math];};
+ math.onclick=()=>{selected.textContent='理学 / 数学相关类';math.attributes['aria-selected']='true';};
+ popup.children=[science];document.byId.set(popup.id,popup);
+ const baseClosest=combo.closest.bind(combo);
+ combo.closest=selector=>selector.includes('cascader')?wrapper:baseClosest(selector);
+ document.children.push(combo,popup);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{
+  fieldId:field.id,value:'专业学位硕士 / 理学 / 数学类',
+ }]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(combo.value,'','Ant cascader keeps the hidden input empty');
+ assert.equal(selected.textContent,'理学 / 数学相关类');
+ assert.ok(science.events.includes('click')&&math.events.includes('click'));
+});
+
+test('Ant day picker applies an exact date but blocks month-only and unavailable present values',async()=>{
+ const {document,send}=createHarness();
+ const originalQuery=document.querySelectorAll.bind(document);
+ document.querySelectorAll=selector=>selector==='.ud__picker-panel-header-btn'?[]:originalQuery(selector);
+ const makeDate=(label,panelId)=>{
+  const panel=new FakeContainer('div',{id:panelId,className:'ant-calendar-picker-container'});panel.id=panelId;
+  panel.matches=selector=>selector.includes('ant-calendar-picker-container');
+  const input=new FakeElement('input',{
+   role:'combobox',readonly:'',readOnly:true,'aria-controls':panelId,'aria-label':label,
+  });
+  const unit=new FakeContainer('td',{title:'2024-09-01'});
+  const cell=new FakeElement('div',{className:'ant-calendar-date',textContent:'1日',parent:unit});
+  unit.children.push(cell);
+  unit.querySelector=selector=>selector.includes('ant-calendar-date')?cell:null;
+  unit.closest=selector=>selector.includes('td[title]')?unit:null;
+  cell.matches=selector=>selector.includes('ant-calendar-date');
+  cell.closest=selector=>selector.includes('td[title]')?unit:null;
+  cell.onclick=()=>{input.value='2024-09-01';};
+  panel.children.push(unit);
+  panel.querySelector=selector=>selector.includes('ant-calendar-date')?cell:null;
+  panel.querySelectorAll=selector=>selector.includes('ant-calendar-date')||selector.includes('td[title]')?[unit,cell]:[];
+  document.byId.set(panelId,panel);
+  return {input,panel,unit,cell};
+ };
+ const start=makeDate('开始日期','start-panel');
+ const end=makeDate('结束日期','end-panel');
+ const current=makeDate('结束日期（至今）','present-panel');
+ document.children.push(start.input,start.panel,end.input,end.panel,current.input,current.panel);
+ const fields=send({type:'SCAN'}).fields;
+ const result=await send({type:'APPLY',items:[
+  {fieldId:fields.find(field=>field.label==='开始日期').id,value:'2024-09-01'},
+  {fieldId:fields.find(field=>field.label==='结束日期').id,value:'2027-10'},
+  {fieldId:fields.find(field=>field.label==='结束日期（至今）').id,value:'至今'},
+ ]});
+ assert.deepEqual(plain(result.results.map(item=>[item.status,item.reason])),[
+  ['applied',null],['skipped','date_precision_required'],['skipped','date_present_unavailable'],
+ ]);
+ assert.equal(start.input.value,'2024-09-01');
+ assert.equal(end.input.value,'');assert.equal(current.input.value,'');
+ assert.ok(start.cell.events.includes('click'));
+ assert.ok(!start.unit.events.includes('click'),'nested Ant cell should prefer its clickable inner date node');
+});
+
+test('Ant day picker refuses duplicate dates from different calendar units',async()=>{
+ const {document,send}=createHarness();
+ const originalQuery=document.querySelectorAll.bind(document);
+ document.querySelectorAll=selector=>selector==='.ud__picker-panel-header-btn'?[]:originalQuery(selector);
+ const panel=new FakeContainer('div',{id:'duplicate-panel',className:'ant-calendar-picker-container'});panel.id='duplicate-panel';
+ panel.matches=selector=>selector.includes('ant-calendar-picker-container');
+ const input=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-controls':panel.id,'aria-label':'开始日期',
+ });
+ const units=[0,1].map(()=>{
+  const unit=new FakeContainer('td',{title:'2024-09-01'});
+  const cell=new FakeElement('div',{className:'ant-calendar-date',textContent:'1日',parent:unit});
+  unit.children.push(cell);unit.querySelector=selector=>selector.includes('ant-calendar-date')?cell:null;
+  unit.closest=selector=>selector.includes('td[title]')?unit:null;
+  cell.matches=selector=>selector.includes('ant-calendar-date');
+  cell.closest=selector=>selector.includes('td[title]')?unit:null;
+  cell.onclick=()=>{input.value='2024-09-01';};
+  return {unit,cell};
+ });
+ panel.children=units.map(item=>item.unit);
+ panel.querySelector=selector=>selector.includes('ant-calendar-date')?units[0].cell:null;
+ panel.querySelectorAll=selector=>selector.includes('ant-calendar-date')||selector.includes('td[title]')
+  ?units.flatMap(item=>[item.unit,item.cell]):[];
+ document.byId.set(panel.id,panel);document.children.push(input,panel);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'2024-09-01'}]});
+ assert.notEqual(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(input.value,'');
+ assert.ok(units.every(item=>!item.cell.events.includes('click')),'ambiguous calendar units must not be clicked');
+});
+
+test('detached Ant calendar parent and child count as one popup root',async()=>{
+ const {document,send}=createHarness();
+ const originalQuery=document.querySelectorAll.bind(document);
+ const container=new FakeContainer('div',{className:'ant-calendar-picker-container'});
+ const calendar=new FakeContainer('div',{className:'ant-calendar',parent:container});
+ container.children.push(calendar);container.contains=node=>node===calendar;
+ calendar.contains=()=>false;
+ const unit=new FakeContainer('td',{title:'2024-09-01',parent:calendar});
+ const cell=new FakeElement('div',{className:'ant-calendar-date',textContent:'1日',parent:unit});
+ unit.children.push(cell);unit.querySelector=selector=>selector.includes('ant-calendar-date')?cell:null;
+ unit.closest=selector=>selector.includes('td[title]')?unit:null;
+ cell.matches=selector=>selector.includes('ant-calendar-date');
+ cell.closest=selector=>selector.includes('td[title]')?unit:null;
+ calendar.children.push(unit);
+ container.querySelector=selector=>selector.includes('ant-calendar-date')?cell:null;
+ container.querySelectorAll=selector=>selector.includes('ant-calendar-date')||selector.includes('td[title]')?[unit,cell]:[];
+ calendar.querySelector=selector=>selector.includes('ant-calendar-date')?cell:null;
+ calendar.querySelectorAll=container.querySelectorAll;
+ document.querySelectorAll=selector=>{
+  if(selector==='.ud__picker-panel-header-btn')return[];
+  if(selector.includes('.ant-calendar-picker-container')&&selector.includes('.ant-calendar'))return[container,calendar];
+  return originalQuery(selector);
+ };
+ const input=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-label':'开始日期',
+ });
+ cell.onclick=()=>{input.value='2024-09-01';};document.children.push(input,container);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'2024-09-01'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.ok(cell.events.includes('click'));
+ const monthOnly=await send({type:'APPLY',items:[{fieldId:field.id,value:'2024-09'}],overwrite:true});
+ assert.deepEqual(plain([monthOnly.results[0].status,monthOnly.results[0].reason]),[
+  'skipped','date_precision_required',
+ ]);
+});
+
+test('failed cascader paths close their popup before another control is processed',async()=>{
+ const {document,send}=createHarness();
+ const popup=new FakeContainer('div',{id:'ambiguous-cascader'});popup.id='ambiguous-cascader';
+ popup.children.push(
+  new FakeElement('li',{role:'menuitem',textContent:'理学'}),
+  new FakeElement('li',{role:'menuitem',textContent:'理学'}),
+ );
+ const wrapper=new FakeContainer('span',{className:'ant-cascader-picker'});
+ const combo=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-controls':popup.id,'aria-label':'专业类别',
+ });
+ const baseClosest=combo.closest.bind(combo);
+ combo.closest=selector=>selector.includes('cascader')?wrapper:baseClosest(selector);
+ document.byId.set(popup.id,popup);document.children.push(combo,popup);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'理学 / 数学类'}]});
+ assert.equal(result.results[0].reason,'cascader_option_ambiguous:0',JSON.stringify(result));
+ assert.ok(combo.events.includes('keydown'),'failed cascader should receive Escape');
 });
 
 test('APPLY strictly relocates a rerendered field by label, section and group anchors',async()=>{

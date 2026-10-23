@@ -59,7 +59,10 @@
   const CONTROL_FALLBACK_BLOCKED_REASONS = new Set([
     "cancelled", "non_empty", "too_long", "option_disabled", "empty_choice",
     "checkbox_requires_boolean", "radio_value_mismatch", "unsafe_control",
+    "date_precision_required", "date_present_unavailable",
+    "site_confirmation_required",
   ]);
+  const HIGHEST_DEGREE_CONFIRMATION_TEXT = "已选择另一学历为最高学历，请确认是否修改？";
 
   function cleanText(value) {
     return String(value || "").replace(/\s+/g, " ").trim();
@@ -118,7 +121,7 @@
       ".ud__select", ".ud__cascader", ".el-select", ".el-cascader",
       "[class*='selectWrapper']", "[class*='SelectWrapper']", "[class*='select-wrapper']",
       "[class*='cascader']", "[class*='Cascader']", "[class*='datePicker']",
-      "[class*='DatePicker']", "[class*='date-picker']",
+      "[class*='DatePicker']", "[class*='date-picker']", "[class*='dateRangePicker']",
     ].join(",")) || null;
   }
 
@@ -145,6 +148,14 @@
   }
 
   function getLabel(element) {
+    const inputType = String(element.type || "").toLowerCase();
+    if (inputType === "radio") {
+      const groupTitle = radioGroupTitle(element);
+      const choice = radioChoiceLabel(element);
+      if (groupTitle) {
+        return disambiguateGroupedLabel(element, choice && choice !== groupTitle ? `${groupTitle}：${choice}` : groupTitle);
+      }
+    }
     const direct = cleanText(
       element.getAttribute("aria-label") || element.getAttribute("data-form-field-i18n-name"),
     );
@@ -169,7 +180,6 @@
       "[class*='form-item-label']", "[class*='FormItem_label']", "[data-formily-label]",
     ].join(","));
     const visualText = labelTextWithoutControls(visualLabel);
-    const inputType = String(element.type || "").toLowerCase();
     if (inputType === "radio" && visualText) {
       const choice = radioChoiceLabel(element);
       return disambiguateGroupedLabel(element, choice && choice !== visualText ? `${visualText}：${choice}` : visualText);
@@ -211,7 +221,7 @@
 
   function disambiguateGroupedLabel(element, label) {
     const range = element.closest?.(
-      ".throne-biz-date-range-picker-wrapper,[class*='date-range-picker'],[class*='DateRangePicker']",
+      ".throne-biz-date-range-picker-wrapper,[class*='date-range-picker'],[class*='DateRangePicker'],[class*='dateRangePicker']",
     );
     if (range?.querySelectorAll) {
       const inputs = Array.from(range.querySelectorAll("input"));
@@ -248,6 +258,33 @@
   function radioChoiceLabel(element) {
     return Array.from(element?.labels || []).map(labelTextWithoutControls).filter(Boolean).join(" ") ||
       cleanText(element?.getAttribute?.("aria-label")) || cleanText(element?.value);
+  }
+
+  function radioGroupTitle(element) {
+    const container = fieldContainer(element) || element?.closest?.(
+      "[role='radiogroup'],fieldset,[class*='radioGroup'],[class*='RadioGroup'],[class*='radio-group']",
+    );
+    if (!container) return "";
+    const explicit = cleanText(container.getAttribute?.("aria-label"));
+    if (explicit) return explicit;
+    const labelledBy = cleanText(container.getAttribute?.("aria-labelledby"));
+    if (labelledBy) {
+      const text = labelledBy.split(/\s+/).map((id) => document.getElementById?.(id)).filter(Boolean)
+        .map((node) => cleanText(node.textContent)).filter(Boolean).join(" ");
+      if (text) return text;
+    }
+    const title = container.querySelector?.([
+      "legend", "[class*='filedName']", "[class*='FiledName']", "[class*='fieldName']",
+      "[class*='FieldName']", "[class*='form-item-label']", "[class*='FormItem_label']",
+    ].join(","));
+    return labelTextWithoutControls(title);
+  }
+
+  function radioChoiceBoolean(element) {
+    const choice = normalizedChoice(radioChoiceLabel(element));
+    if (["是", "yes", "true", "1", "最高学历", "当前最高学历"].includes(choice)) return true;
+    if (["否", "no", "false", "0", "不是", "非最高学历"].includes(choice)) return false;
+    return null;
   }
 
   function getSection(element) {
@@ -289,7 +326,7 @@
     if (tag === "textarea") return "textarea";
     if (element.isContentEditable) return "contenteditable";
     if (isDatePicker(element) && (
-      isCustomPicker(element) || element.closest?.(".throne-biz-date-range-picker-wrapper,[class*='date-range-picker'],[class*='DateRangePicker']")
+      isCustomPicker(element) || element.closest?.(".throne-biz-date-range-picker-wrapper,[class*='date-range-picker'],[class*='DateRangePicker'],[class*='dateRangePicker']")
     )) return "date-picker";
     if (isCustomPicker(element)) return "combobox";
     return String(element.type || "text").toLowerCase();
@@ -319,7 +356,7 @@
       if (selectedValues.length) return selectedValues.join("；");
       const text = cleanText(element.textContent);
       const placeholder = cleanText(element.getAttribute?.("placeholder"));
-      if (!text || text === placeholder || /^(请选择|请输入|搜索|select|choose|search)/i.test(text)) return "";
+      if (!text || text === placeholder || /^(请选择|请输入|请填写|请录入|搜索|select|choose|search)/i.test(text)) return "";
       return text;
     }
     return element.value == null ? "" : String(element.value);
@@ -327,10 +364,10 @@
 
   function selectedPickerValues(element) {
     const root = element.closest?.(
-      ".ud__select,.semi-select,.ant-select,[class*='select-wrapper'],[class*='SelectWrapper']",
+      ".ud__select,.semi-select,.ant-select,.ant-cascader-picker,.semi-cascader,[class*='select-wrapper'],[class*='SelectWrapper'],[class*='cascader']",
     ) || element;
     const values = Array.from(root.querySelectorAll?.(
-      "[aria-selected='true'],[data-selected='true'],.ud__select__selector__selectItem,.semi-select-selection-text,.ant-select-selection-item,[class*='selected-value']",
+      "[aria-selected='true'],[data-selected='true'],.ud__select__selector__selectItem,.semi-select-selection-text,.ant-select-selection-item,.ant-select-selection-selected-value,.ant-cascader-picker-label,[class*='selected-value']",
     ) || []).map((node) => cleanText(node.textContent)).filter(Boolean);
     if (!isMultiPicker(element)) return values;
     // Some UD multi-select versions expose every chip in one combined text
@@ -380,6 +417,15 @@
           cleanText(currentValue(candidate, fieldType(candidate)));
       });
       if (anchor) recordLabel = shortText(currentValue(anchor, fieldType(anchor)), 100);
+      else {
+        const hasExistingContent = controls.some((candidate) => {
+          const type = fieldType(candidate);
+          const value = currentValue(candidate, type);
+          if (type === "radio" || type === "checkbox") return value === true;
+          return cleanText(value) !== "";
+        });
+        if (hasExistingContent) recordLabel = "未识别的已有记录";
+      }
     }
     return {
       record,
@@ -457,7 +503,7 @@
 
   function trustedFieldKey(element) {
     const range = element.closest?.(
-      ".throne-biz-date-range-picker-wrapper,[class*='date-range-picker'],[class*='DateRangePicker']",
+      ".throne-biz-date-range-picker-wrapper,[class*='date-range-picker'],[class*='DateRangePicker'],[class*='dateRangePicker']",
     );
     if (range?.querySelectorAll) {
       const inputs = Array.from(range.querySelectorAll("input"));
@@ -543,7 +589,7 @@
     }
     const hasOwnedPopup = roots.length > 0;
     const inline = element.closest?.(
-      ".ud__select,.semi-select,.ant-select,.el-select,[class*='select-wrapper'],[class*='SelectWrapper']",
+      ".ud__select,.semi-select,.ant-select,.ant-cascader-picker,.semi-cascader,.el-select,[class*='select-wrapper'],[class*='SelectWrapper'],[class*='cascader']",
     );
     if (inline) roots.push(inline);
     const isActiveOrOpen = document.activeElement === element ||
@@ -552,10 +598,13 @@
       const popupSelector = [
         "[role='listbox']", "[role='tree']", ".ud__select__list", ".semi-select-option-list",
         "[role='dialog']", "[role='grid']", ".ant-select-dropdown", ".ant-cascader-menus",
-        ".ant-picker-dropdown", ".semi-datepicker", ".ud__picker", ".el-select-dropdown",
+        ".ant-picker-dropdown", ".ant-calendar-picker-container", ".ant-calendar", ".semi-datepicker", ".ud__picker", ".el-select-dropdown",
         ".el-picker-panel", "[class*='date-picker-panel']", "[class*='DatePickerPanel']",
       ].join(",");
-      const popups = Array.from(document.querySelectorAll?.(popupSelector) || []).filter(isVisible);
+      const visiblePopups = [...new Set(Array.from(document.querySelectorAll?.(popupSelector) || []).filter(isVisible))];
+      const popups = visiblePopups.filter((candidate) => !visiblePopups.some((other) => (
+        other !== candidate && typeof other.contains === "function" && other.contains(candidate)
+      )));
       // A single visible popup after opening the control is a bounded association.
       // Multiple unrelated portals are ambiguous and must never be guessed.
       if (popups.length === 1 && !roots.includes(popups[0])) roots.push(popups[0]);
@@ -573,6 +622,7 @@
       ".ud__select__list__item",
       ".ant-select-item-option",
       ".ant-cascader-menu-item",
+      ".ant-cascader-menu-item[role='menuitem']",
       ".el-select-dropdown__item",
       "[class*='select-option']",
       "[class*='SelectOption']",
@@ -596,6 +646,8 @@
     const selector = [
       "button", "[role='button']", "[role='gridcell']", "[role='cell']",
       ".ud__picker__cell-interactive-area", ".ant-picker-cell-inner",
+      ".ant-calendar-date", ".ant-calendar-prev-year-btn", ".ant-calendar-next-year-btn",
+      ".ant-calendar-prev-month-btn", ".ant-calendar-next-month-btn",
       ".semi-datepicker-day", ".el-date-table td",
     ].join(",");
     for (const root of pickerRoots(element, true)) {
@@ -645,6 +697,17 @@
     return normalizedChoice(value).replace(/(特别行政区|壮族自治区|回族自治区|维吾尔自治区|自治区|省|市|区|县)$/u, "");
   }
 
+  function normalizedCascaderSegment(value) {
+    return normalizedChoice(String(value || "").replace(/[（(][^）)]*[）)]/g, ""))
+      .replace(/相关(?=类$)/u, "");
+  }
+
+  function isEducationPrefix(value) {
+    return /^(?:(?:专业学位|学术学位)?(?:博士|硕士)|本科|专科|大专|高中|中专|普通教育|统招|非统招|自考|其他)/i.test(
+      normalizedCascaderSegment(value),
+    );
+  }
+
   function isCascaderPicker(element) {
     if (cleanText(element.getAttribute?.("aria-haspopup")).toLowerCase() === "tree") return true;
     return Boolean(element.closest?.(
@@ -653,14 +716,17 @@
   }
 
   function exactCascaderOptions(element, requested) {
-    const expected = normalizedRegionSegment(requested);
+    const normalize = /(地址|地区|城市|省市|居住|户籍)/i.test(getLabel(element))
+      ? normalizedRegionSegment
+      : normalizedCascaderSegment;
+    const expected = normalize(requested);
     return visiblePickerOptions(element, true).filter((option) => {
       const values = [
         option.textContent,
         option.getAttribute?.("data-value"),
         option.getAttribute?.("value"),
         option.getAttribute?.("aria-label"),
-      ].map(normalizedRegionSegment).filter(Boolean);
+      ].map(normalize).filter(Boolean);
       return values.includes(expected);
     });
   }
@@ -699,6 +765,81 @@
     if (!match) return "";
     const year = match[0].match(/(19|20)\d{2}/)?.[0] || "";
     return year && match[2] ? `${year}-${String(match[2]).padStart(2, "0")}` : "";
+  }
+
+  function exactDate(value) {
+    const match = cleanText(value).match(/^((?:19|20)\d{2})\D{0,3}(0?[1-9]|1[0-2])\D{0,3}(0?[1-9]|[12]\d|3[01])$/);
+    if (!match) return "";
+    return `${match[1]}-${String(match[2]).padStart(2, "0")}-${String(match[3]).padStart(2, "0")}`;
+  }
+
+  function isPresentDate(value) {
+    return /^(至今|现在|当前|今|present|current|now)$/i.test(cleanText(value));
+  }
+
+  function normalizedDateCandidate(value) {
+    const text = cleanText(value);
+    const chinese = text.match(/((?:19|20)\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日/);
+    if (chinese) return `${chinese[1]}-${String(chinese[2]).padStart(2, "0")}-${String(chinese[3]).padStart(2, "0")}`;
+    return exactDate(text);
+  }
+
+  function antDatePanelRoots(element) {
+    return pickerRoots(element, true).filter((root) => (
+      root.matches?.(".ant-calendar-picker-container,.ant-calendar,.ant-picker-dropdown") ||
+      root.querySelector?.(".ant-calendar-date,[data-value],td[title]")
+    ));
+  }
+
+  function findExactAntDateCell(element, requested) {
+    const target = exactDate(requested);
+    if (!target) return null;
+    const selector = ".ant-calendar-date,.ant-picker-cell-inner,td[title],[data-value]";
+    const matches = new Map();
+    for (const root of antDatePanelRoots(element)) {
+      for (const candidate of root.querySelectorAll?.(selector) || []) {
+        if (!isVisible(candidate) || isDisabledOption(candidate)) continue;
+        const values = [
+          candidate.getAttribute?.("title"), candidate.getAttribute?.("data-value"),
+          candidate.parentElement?.getAttribute?.("title"), candidate.textContent,
+        ].map(normalizedDateCandidate).filter(Boolean);
+        if (!values.includes(target)) continue;
+        const unit = candidate.closest?.("td[title],[role='gridcell'],.ant-picker-cell") || candidate;
+        const preferred = candidate.matches?.(".ant-calendar-date,.ant-picker-cell-inner")
+          ? candidate
+          : (unit.querySelector?.(".ant-calendar-date,.ant-picker-cell-inner") || candidate);
+        const previous = matches.get(unit);
+        if (!previous || preferred !== unit) matches.set(unit, preferred);
+      }
+    }
+    return matches.size === 1 ? [...matches.values()][0] : null;
+  }
+
+  async function applyAntDatePicker(element, requested, operationId) {
+    const panels = antDatePanelRoots(element);
+    if (!panels.length) return null;
+    const explicitOption = findExactPickerOption(element, requested);
+    if (isPresentDate(requested)) {
+      if (!explicitOption) return { status: "skipped", reason: "date_present_unavailable" };
+      return null;
+    }
+    if (yearMonth(requested) && !exactDate(requested)) {
+      return { status: "skipped", reason: "date_precision_required" };
+    }
+    const target = exactDate(requested);
+    if (!target) return null;
+    const cell = findExactAntDateCell(element, requested);
+    if (!cell) return null;
+    dispatchPointerClick(cell);
+    const readback = await waitFor(
+      () => exactDate(currentValue(element, fieldType(element))) === target,
+      operationId,
+      700,
+    );
+    if (readback.cancelled) return { status: "skipped", reason: "cancelled" };
+    return readback.value
+      ? { status: "applied" }
+      : { status: "failed", reason: "value_mismatch" };
   }
 
   function findVisible(root, selector) {
@@ -771,42 +912,52 @@
 
   async function applyCascaderPath(element, requested, operationId) {
     if (!isCascaderPicker(element)) return null;
-    const segments = requested.split(/\s*(?:\/|>|›|→)\s*/).map(cleanText).filter(Boolean);
+    const rawSegments = requested.split(/\s*(?:\/|>|›|→)\s*/).map(cleanText).filter(Boolean);
+    const segments = rawSegments.length > 2 && isEducationPrefix(rawSegments[0])
+      ? rawSegments.slice(1)
+      : rawSegments;
     if (segments.length < 2) return null;
+    const closeWith = (result) => {
+      sendEscape(element);
+      return result;
+    };
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
       const found = await waitFor(() => {
         const matches = exactCascaderOptions(element, segment);
         return matches.length ? matches : null;
       }, operationId);
-      if (found.cancelled) return { status: "skipped", reason: "cancelled" };
+      if (found.cancelled) return closeWith({ status: "skipped", reason: "cancelled" });
       const matches = found.value || [];
-      if (!matches.length) return { status: "skipped", reason: `cascader_option_not_found:${index}` };
-      if (matches.length !== 1) return { status: "skipped", reason: `cascader_option_ambiguous:${index}` };
+      if (!matches.length) return closeWith({ status: "skipped", reason: `cascader_option_not_found:${index}` });
+      if (matches.length !== 1) return closeWith({ status: "skipped", reason: `cascader_option_ambiguous:${index}` });
       const option = matches[0];
-      if (isDisabledOption(option)) return { status: "skipped", reason: "option_disabled" };
+      if (isDisabledOption(option)) return closeWith({ status: "skipped", reason: "option_disabled" });
       dispatchPointerClick(option);
       if (index < segments.length - 1) {
         const next = segments[index + 1];
         const advanced = await waitFor(() => exactCascaderOptions(element, next).length === 1, operationId, 700);
-        if (advanced.cancelled) return { status: "skipped", reason: "cancelled" };
-        if (!advanced.value) return { status: "failed", reason: `cascader_level_timeout:${index + 1}` };
+        if (advanced.cancelled) return closeWith({ status: "skipped", reason: "cancelled" });
+        if (!advanced.value) return closeWith({ status: "failed", reason: `cascader_level_timeout:${index + 1}` });
       }
     }
-    const finalSegment = normalizedRegionSegment(segments.at(-1));
+    const normalize = /(地址|地区|城市|省市|居住|户籍)/i.test(getLabel(element))
+      ? normalizedRegionSegment
+      : normalizedCascaderSegment;
+    const finalSegment = normalize(segments.at(-1));
     const readback = await waitFor(() => {
       const value = currentValue(element, fieldType(element));
       const selected = selectedPickerValues(element);
-      const currentPath = value.split(/\s*(?:\/|>|›|→|；)\s*/).map(normalizedRegionSegment).filter(Boolean);
+      const currentPath = value.split(/\s*(?:\/|>|›|→|；)\s*/).map(normalize).filter(Boolean);
       return (
         currentPath.length >= segments.length &&
-        segments.every((segment, index) => currentPath[index] === normalizedRegionSegment(segment))
-      ) || normalizedRegionSegment(value) === finalSegment || selected.some((item) => normalizedRegionSegment(item) === finalSegment);
+        segments.every((segment, index) => currentPath[index] === normalize(segment))
+      ) || normalize(value) === finalSegment || selected.some((item) => normalize(item) === finalSegment);
     }, operationId, 700);
-    if (readback.cancelled) return { status: "skipped", reason: "cancelled" };
+    if (readback.cancelled) return closeWith({ status: "skipped", reason: "cancelled" });
     return readback.value
       ? { status: "applied" }
-      : { status: "failed", reason: "value_mismatch" };
+      : closeWith({ status: "failed", reason: "value_mismatch" });
   }
 
   async function applyCustomPicker(element, value, operationId) {
@@ -832,6 +983,8 @@
     if (fieldType(element) === "date-picker") {
       const dateResult = await applyUdMonthPicker(element, requested, operationId);
       if (dateResult) return dateResult;
+      const antDateResult = await applyAntDatePicker(element, requested, operationId);
+      if (antDateResult) return antDateResult;
     }
     const cascaderResult = await applyCascaderPath(element, requested, operationId);
     if (cascaderResult) return cascaderResult;
@@ -895,13 +1048,101 @@
   }
 
   function radioGroupHasSelection(element) {
+    return radioGroupElements(element).some((candidate) => candidate.checked);
+  }
+
+  function radioGroupElements(element) {
     const name = String(element.name || element.getAttribute("name") || "");
-    if (!name) return Boolean(element.checked);
-    const root = element.form || (typeof element.getRootNode === "function" && element.getRootNode()) || document;
-    if (!root || typeof root.querySelectorAll !== "function") return Boolean(element.checked);
-    return Array.from(root.querySelectorAll("input[type='radio']")).some(
-      (candidate) => String(candidate.name || candidate.getAttribute("name") || "") === name && candidate.checked,
+    if (name) {
+      const root = element.form || (typeof element.getRootNode === "function" && element.getRootNode()) || document;
+      if (!root || typeof root.querySelectorAll !== "function") return [element];
+      return Array.from(root.querySelectorAll("input[type='radio']")).filter(
+        (candidate) => String(candidate.name || candidate.getAttribute("name") || "") === name,
+      );
+    }
+    const group = element.closest?.(
+      "[role='radiogroup'],.ant-radio-group,.semi-radio-group,[class*='radioGroup'],[class*='RadioGroup'],[class*='radio-group']",
     );
+    if (!group?.querySelectorAll) return [element];
+    const peers = Array.from(group.querySelectorAll("input[type='radio']"));
+    return peers.includes(element) ? peers : [element];
+  }
+
+  function selectRadioElement(element) {
+    element.scrollIntoView?.({ block: "center", inline: "nearest", behavior: "auto" });
+    element.focus?.({ preventScroll: true });
+    // A native click is the one interaction React-controlled radios expect. Do
+    // not pre-set the value or emit a second change event: either can make a
+    // site's confirmation effect run twice.
+    if (typeof element.click === "function") element.click();
+    else element.dispatchEvent(new Event("click", { bubbles: true, composed: true, cancelable: true }));
+    if (element.checked) return;
+
+    // Minimal fallback for non-native/custom test controls. Only the selected
+    // radio emits a change; browsers clear its peers as part of one selection.
+    for (const peer of radioGroupElements(element)) {
+      if (peer !== element && peer.checked) nativeSetter(peer, "checked", false);
+    }
+    nativeSetter(element, "checked", true);
+    emitChangeEvents(element);
+  }
+
+  function normalizedConfirmationText(value) {
+    return cleanText(value).replace(/[\s\u00a0]+/g, "");
+  }
+
+  function highestDegreeConfirmationModal() {
+    const selector = ".ant-modal-confirm:not([aria-hidden='true']),[role='dialog'].ant-modal-confirm:not([aria-hidden='true'])";
+    const matches = Array.from(document.querySelectorAll?.(selector) || []).filter((modal) => {
+      if (!isVisible(modal)) return false;
+      const content = modal.querySelector?.(
+        ".ant-modal-confirm-content,.ant-modal-confirm-body .ant-modal-confirm-content",
+      );
+      return normalizedConfirmationText(content?.textContent) ===
+        normalizedConfirmationText(HIGHEST_DEGREE_CONFIRMATION_TEXT);
+    });
+    return matches.length === 1 ? matches[0] : (matches.length > 1 ? "ambiguous" : null);
+  }
+
+  function exactHighestDegreeConfirmButton(modal) {
+    const buttons = Array.from(modal.querySelectorAll?.("button") || []).filter((button) => {
+      if (!isVisible(button) || button.disabled) return false;
+      return ["确认", "确定", "确认修改"].includes(cleanText(button.textContent));
+    });
+    return buttons.length === 1 ? buttons[0] : null;
+  }
+
+  async function handleHighestDegreeConfirmation(element, operationId) {
+    if (radioChoiceBoolean(element) !== true || !/是否最高学历/.test(radioGroupTitle(element))) {
+      return { status: "applied" };
+    }
+    const deadline = Date.now() + 400;
+    let modal = null;
+    do {
+      if (operationId !== activeOperationId) return { status: "skipped", reason: "cancelled" };
+      modal = highestDegreeConfirmationModal();
+      if (modal) break;
+      await delay(POLL_INTERVAL_MS);
+    } while (Date.now() < deadline);
+    if (!modal) return { status: "applied" };
+    if (modal === "ambiguous") return { status: "skipped", reason: "site_confirmation_required" };
+
+    const confirm = exactHighestDegreeConfirmButton(modal);
+    if (!confirm) return { status: "skipped", reason: "site_confirmation_required" };
+    confirm.scrollIntoView?.({ block: "center", inline: "nearest", behavior: "auto" });
+    confirm.focus?.({ preventScroll: true });
+    if (typeof confirm.click === "function") confirm.click();
+    else confirm.dispatchEvent(new Event("click", { bubbles: true, composed: true, cancelable: true }));
+    const closed = await waitFor(
+      () => !modal.isConnected || !isVisible(modal) || highestDegreeConfirmationModal() !== modal,
+      operationId,
+      1200,
+    );
+    if (closed.cancelled) return { status: "skipped", reason: "cancelled" };
+    if (!closed.value) return { status: "skipped", reason: "site_confirmation_required" };
+    return element.checked
+      ? { status: "applied" }
+      : { status: "failed", reason: "value_mismatch" };
   }
 
   function booleanValue(value) {
@@ -934,10 +1175,20 @@
     } else if (type === "radio") {
       const checked = booleanValue(value);
       const matchesValue = String(value) === String(element.value);
+      const choiceBoolean = radioChoiceBoolean(element);
+      const matchesBooleanChoice = checked !== null && choiceBoolean !== null && checked === choiceBoolean;
       if (checked === null && !matchesValue) {
         return { status: "skipped", reason: "radio_value_mismatch" };
       }
-      nativeSetter(element, "checked", checked === null ? true : checked);
+      if (checked !== null && choiceBoolean !== null && !matchesBooleanChoice) {
+        return { status: "skipped", reason: "radio_value_mismatch" };
+      }
+      if (checked === null || matchesBooleanChoice || checked === true) {
+        selectRadioElement(element);
+        if (!element.checked) return { status: "failed", reason: "value_mismatch" };
+        return handleHighestDegreeConfirmation(element, operationId);
+      }
+      else nativeSetter(element, "checked", false);
     } else if (tag === "select") {
       const requested = String(value);
       const option = Array.from(element.options || []).find(
@@ -960,7 +1211,7 @@
 
     emitChangeEvents(element);
     if (type === "checkbox" || type === "radio") {
-      const expected = type === "radio" && booleanValue(value) === null ? true : booleanValue(value);
+      const expected = type === "radio" ? true : booleanValue(value);
       if (Boolean(element.checked) !== expected) return { status: "failed", reason: "value_mismatch" };
     } else if (tag === "select") {
       const requested = String(value);
@@ -1181,9 +1432,13 @@
     const operationId = activeOperationId;
     const resolved = resolveField(fieldId);
     if (!resolved.element) return { ok: false, verified: false, reason: resolved.reason, operationId };
-    const actual = currentValue(resolved.element, fieldType(resolved.element));
+    const type = fieldType(resolved.element);
+    const actual = currentValue(resolved.element, type);
     const expected = cleanText(value);
-    const verified = normalizedChoice(actual) === normalizedChoice(expected) ||
+    const boolean = booleanValue(value);
+    const radioVerified = type === "radio" && boolean !== null &&
+      radioChoiceBoolean(resolved.element) === boolean && Boolean(resolved.element.checked);
+    const verified = radioVerified || normalizedChoice(actual) === normalizedChoice(expected) ||
       selectedPickerValues(resolved.element).some((selected) => normalizedChoice(selected) === normalizedChoice(expected));
     return { ok: true, verified, actual: shortText(actual, 200), reason: verified ? undefined : "value_mismatch", operationId };
   }
@@ -1223,9 +1478,14 @@
     if (!Array.isArray(items)) return [];
     const operationId = ++activeOperationId;
     const results = [];
+    let confirmationBlocked = false;
     for (const item of items) {
       const fieldId = item && typeof item.fieldId === "string" ? item.fieldId : "";
       try {
+        if (confirmationBlocked) {
+          results.push({ fieldId, status: "skipped", reason: "site_confirmation_required" });
+          continue;
+        }
         if (operationId !== activeOperationId) {
           results.push({ fieldId, status: "skipped", reason: "cancelled" });
           continue;
@@ -1243,6 +1503,7 @@
           result = await requestControlFill(item, overwrite, options, operationId) || result;
         }
         results.push({ fieldId, ...result });
+        if (result.reason === "site_confirmation_required") confirmationBlocked = true;
       } catch (error) {
         const fallback = options.browserControl === true
           ? await requestControlFill(item, overwrite, options, operationId) : null;

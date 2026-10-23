@@ -6,6 +6,19 @@
 <header><span class="logo">简</span><div><h1>简历工作台</h1><p>你的资料，你的填写助手</p></div></header>
 <label for="resume">使用简历</label><select id="resume"></select>
 <div class="actions"><button id="floating">显示页面悬浮助手</button><button id="scan">AI 理解当前页面并预览</button><button id="local" class="secondary">仅本地识别（不调用 API）</button><button id="manage" class="secondary">管理资料与 API</button></div>
+<details id="attachments-panel">
+<summary>本地附件与当前页面</summary>
+<p class="hint">附件只保存在当前浏览器。选择文件控件后，部分网站可能立即开始上传；扩展不会提交申请，请务必回到页面复核。</p>
+<a id="attachments-manage" class="link-button" target="_blank" rel="noopener">管理本地附件库</a>
+<div class="attachment-grid">
+<label for="attachment">选择附件</label><select id="attachment"></select>
+<label for="attachment-target">页面文件控件</label><select id="attachment-target"></select>
+</div>
+<p id="attachment-page" class="page-url"></p>
+<button id="attachment-refresh" class="secondary">重新识别页面文件控件</button>
+<button id="attachment-apply" disabled>选择附件到此页面</button>
+<p id="attachment-status" class="hint" role="status">打开后会读取附件公开信息和当前页面的文件控件。</p>
+</details>
 <details><summary>浏览器控制与视觉兜底</summary>
 <p class="hint">DOM 填写失败后，可使用浏览器输入与点击。扩展声明了 Chrome 调试权限，控制功能默认关闭；启用后操作期间显示调试提示，只对当前目标页执行操作，不会自动提交。关闭开关停止使用，移除权限需停用或卸载扩展。</p>
 <button id="control" class="secondary">启用浏览器输入控制</button>

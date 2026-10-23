@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>京东控件回归 · 虚构资料</title>
+  <style>
+    *{box-sizing:border-box}body{max-width:940px;margin:32px auto;padding:0 20px;font:15px/1.55 system-ui;color:#172033;background:#f5f7fa}
+    h1{margin-bottom:4px}.note{color:#59677c}.gridContainer___fixture{background:#fff;border:1px solid #d9e0e8;padding:22px;margin:18px 0;border-radius:8px}
+    .title___fixture{font-size:20px;font-weight:700;margin-bottom:14px}.formGroupItem___fixture{border-top:1px solid #edf0f4;padding-top:8px}
+    .fieldItem___fixture{margin:15px 0}.filedName___fixture{font-weight:650;margin-bottom:6px}.control,input,textarea{width:100%;min-height:42px;padding:9px 12px;border:1px solid #aeb8c5;border-radius:5px;background:#fff;font:inherit}
+    .dateRangePicker___fixture{display:grid;grid-template-columns:1fr 1fr;gap:12px}.ant-cascader-picker{position:relative;display:block}.ant-cascader-picker-label{position:absolute;inset:1px 38px 1px 1px;padding:10px 12px;background:#fff;pointer-events:none}
+    .ant-radio-group{display:flex;gap:24px}.ant-radio-wrapper{display:flex;align-items:center;gap:7px}.ant-cascader-menus,.ant-calendar-picker-container{position:absolute;z-index:20;background:#fff;border:1px solid #aeb8c5;box-shadow:0 8px 24px #26374a33;padding:8px;min-width:230px}
+    .ant-cascader-menu{list-style:none;padding:0;margin:0}.ant-cascader-menu-item,.ant-calendar-date{padding:8px 10px;cursor:pointer;border-radius:4px}.ant-cascader-menu-item:hover,.ant-calendar-date:hover{background:#e8f1ff}
+    .ant-calendar-body{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}.pending{padding:10px 12px;border-left:4px solid #e69b22;background:#fff7df;color:#714b0e}
+    button{font:inherit;padding:9px 14px;border:1px solid #386fc1;border-radius:5px;background:#edf4ff;color:#174f9e;cursor:pointer}#run{background:#1769df;color:#fff}.actions{display:flex;gap:10px;flex-wrap:wrap}pre{background:#172033;color:#e8edf5;padding:16px;border-radius:6px;white-space:pre-wrap}[hidden]{display:none!important}
+  </style>
+</head>
+<body>
+  <h1>京东控件回归页</h1>
+  <p class="note">仅使用虚构资料，不调用 API，不保存或提交。DOM 类名按已观察到的京东结构建立。</p>
+  <div class="actions"><button id="run" type="button">运行虚构资料回归</button><button id="choose-end" type="button">用户确认结束日为 2027-10-01</button></div>
+  <p class="pending">边界：本地资料若只有 <strong>2027-10</strong>，而页面要求 YYYY-MM-DD，助手必须保持待确认，不能自行编造某一天。</p>
+
+  <section id="education" class="gridContainer___fixture">
+    <div class="title___fixture">教育经历</div>
+    <div class="formGroupItem___fixture">
+      <div class="fieldItem___fixture"><div class="filedName___fixture">专业类别</div>
+        <span class="ant-cascader-picker"><span class="ant-cascader-picker-label"></span><input id="major" class="ant-cascader-input" readonly aria-haspopup="tree" aria-controls="major-menus" placeholder="请选择专业类别"></span>
+      </div>
+      <div class="fieldItem___fixture"><div class="filedName___fixture">是否最高学历</div>
+        <div class="ant-radio-group"><label class="ant-radio-wrapper"><input class="ant-radio-input" type="radio" value="1" aria-label="是">是</label><label class="ant-radio-wrapper"><input class="ant-radio-input" type="radio" value="0" aria-label="否">否</label></div>
+      </div>
+      <div class="fieldItem___fixture"><div class="filedName___fixture">起止时间</div>
+        <div class="dateRangePicker___fixture"><span class="dateRangeStartPicker___fixture ant-calendar-picker"><input id="education-start" readonly placeholder="开始日期" aria-controls="start-calendar"></span><span class="dateRangeEndPicker___fixture ant-calendar-picker"><input id="education-end" readonly placeholder="结束日期" aria-controls="end-calendar"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="program" class="gridContainer___fixture"><div class="title___fixture">项目经历</div><div class="formGroupItem___fixture"><div class="fieldItem___fixture"><div class="filedName___fixture">项目经历描述</div><textarea id="program-description"></textarea></div></div></section>
+  <section id="campus" class="gridContainer___fixture"><div class="title___fixture">校园经历</div><div class="formGroupItem___fixture"><div class="fieldItem___fixture"><div class="filedName___fixture">校园经历描述</div><textarea id="campus-description"></textarea></div></div></section>
+
+  <div id="major-menus" class="ant-cascader-menus" role="tree" hidden></div>
+  <div id="start-calendar" class="ant-calendar-picker-container" role="dialog" hidden></div>
+  <div id="end-calendar" class="ant-calendar-picker-container" role="dialog" hidden></div>
+  <pre id="result" role="status">等待运行</pre>
+  <script src="jd-controls.js"></script>
+  <script src="../extension/content.js"></script>
+</body>
+</html>

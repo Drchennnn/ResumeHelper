@@ -50,7 +50,7 @@ class FakeShadow extends FakeNode {
     this.markup = value;
     const selectors = [
       ".launcher", ".panel", ".resume", ".edit", ".scan", ".selected", ".assist", ".status",
-      ".prepare", ".stop", ".issues", ".local", ".browser-control", ".vision-fallback", ".control-state", ".api-detail",
+      ".prepare", ".attachments", ".stop", ".issues", ".local", ".browser-control", ".vision-fallback", ".control-state", ".api-detail",
       ".preview", ".summary", ".items", ".ai", ".overwrite", ".confirm", ".facts",
       ".facts-list", ".picker", ".minimize", ".close", ".facts-close",
     ];

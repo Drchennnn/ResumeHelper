@@ -12,7 +12,7 @@ files = sorted(path for path in (root / 'extension').rglob('*') if path.is_file(
 with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
     for path in files:
         archive.write(path, path.relative_to(root))
-    for name in ['README.md', 'THIRD_PARTY_NOTICES.md', 'docs/hybrid-control.md']:
+    for name in ['README.md', 'THIRD_PARTY_NOTICES.md', 'docs/hybrid-control.md', 'docs/attachments.md', 'docs/verification-0.7.0.md']:
         archive.write(root / name, name)
 with zipfile.ZipFile(destination) as archive:
     assert archive.testzip() is None

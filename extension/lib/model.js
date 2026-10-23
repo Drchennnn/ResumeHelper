@@ -21,17 +21,24 @@ const recordIdentityKeys={
 };
 
 function inputSection(input,section){return input[section.key]!==undefined?input[section.key]:input[sectionAliases[section.key]];}
+function explicitDateRange(value){
+ const match=/^(\d{4}-(?:0[1-9]|1[0-2]))\s*(?:至|到|—|–|~|～|\s-\s)\s*(至今|现在|present|\d{4}-(?:0[1-9]|1[0-2]))$/i.exec(String(value||'').trim());
+ return match?{start_date:match[1],end_date:/^(至今|现在|present)$/i.test(match[2])?'至今':match[2]}:null;
+}
 function normalizeRow(section,value){
  const source=value&&typeof value==='object'&&!Array.isArray(value)?value:{},aliases=fieldAliases[section.key]||{};
- return Object.fromEntries(section.fields.map(field=>{
+ const row=Object.fromEntries(section.fields.map(field=>{
   let raw=source[field.key];
   if(raw===undefined)for(const alias of aliases[field.key]||[]){if(source[alias]!==undefined){raw=source[alias];break;}}
   if(field.options?.some(option=>option.value==='true')&&field.options?.some(option=>option.value==='false')){
-   if(raw==='true')raw=true;
-   if(raw==='false')raw=false;
+   if(raw==='true'||raw==='是'||raw==='yes')raw=true;
+   if(raw==='false'||raw==='否'||raw==='no')raw=false;
   }
   return [field.key,clean(raw)];
  }));
+ const range=explicitDateRange(row.date_range);
+ if(range){if(!hasValue(row.start_date))row.start_date=range.start_date;if(!hasValue(row.end_date))row.end_date=range.end_date;}
+ return row;
 }
 
 export function createResume(name='我的简历'){return normalizeResume({name});}
@@ -54,16 +61,25 @@ export function normalizeResume(input){
 }
 
 const displayValue=value=>typeof value==='boolean'?(value?'是':'否'):String(value);
+const degreeRank=value=>{const text=String(value||'');if(/博士/.test(text))return 4;if(/硕士|研究生/.test(text))return 3;if(/本科|学士/.test(text))return 2;if(/专科|大专|高职/.test(text))return 1;return 0;};
 export function flattenResume(resume){
  const out=[];
  for(const section of SECTIONS){
   const rows=section.repeatable?(Array.isArray(resume?.[section.key])?resume[section.key]:[]):[resume?.[section.key]||{}];
-  rows.forEach((row,index)=>section.fields.forEach(field=>{
-   if(!hasValue(row?.[field.key]))return;
+  const educationRanks=section.key==='education'?rows.map(row=>degreeRank(row?.degree)):[];
+  const highestRank=educationRanks.length?Math.max(...educationRanks):0;
+  const highestEducationIndex=highestRank>0&&educationRanks.every(Boolean)&&educationRanks.filter(rank=>rank===highestRank).length===1?educationRanks.indexOf(highestRank):null;
+  rows.forEach((row,index)=>{
    const identityKey=section.repeatable?(recordIdentityKeys[section.key]||[]).find(key=>hasValue(row?.[key])):undefined;
-   out.push({path:`${section.key}.${section.repeatable?`${index}.`:''}${field.key}`,label:`${section.title}${section.repeatable?` ${index+1}`:''} / ${field.label}`,value:displayValue(row[field.key]),
+   const push=(key,label,value)=>out.push({path:`${section.key}.${section.repeatable?`${index}.`:''}${key}`,label:`${section.title}${section.repeatable?` ${index+1}`:''} / ${label}`,value:displayValue(value),
     ...(identityKey?{recordLabel:displayValue(row[identityKey]),recordKey:identityKey}:{})});
-  }));
+   section.fields.forEach(field=>{
+    if(!hasValue(row?.[field.key]))return;
+    push(field.key,field.label,row[field.key]);
+   });
+   if(section.repeatable&&!hasValue(row?.date_range)&&hasValue(row?.start_date)&&hasValue(row?.end_date))push('date_range','起止时间',`${displayValue(row.start_date)} - ${displayValue(row.end_date)}`);
+   if(section.key==='education'&&highestEducationIndex!==null)push('is_highest_degree','是否最高学历',index===highestEducationIndex);
+  });
  }
  if(hasValue(resume?.extras))out.push({path:'extras',label:'补充资料',value:String(resume.extras)});
  return out;
@@ -106,6 +122,8 @@ const manualAliases={
  'personal.phone':['手机','联系电话','电话','phone','mobile'],
  'education.school':['学校','学校名称','院校','院校名称','毕业学校','school','university'],
  'education.major':['专业','专业名称','major'],'education.degree':['学历','学历层次','教育程度','degree'],
+ 'education.major_category':['专业类别','专业大类','学科门类','所属专业类','major category'],
+ 'education.is_highest_degree':['是否最高学历','最高学历标识','是否最高教育经历','highest education'],
  'education.department':['学院','学院名称','院系','院系名称','department'],'education.advisor_name':['导师','导师姓名','advisor'],
  'education.research_focus':['研究方向','领域方向','研究领域','research focus'],
  'education.start_date':['入学时间','入学日期','开始时间','开始日期','起始时间'],
@@ -146,7 +164,16 @@ function sectionKeyOf(value){
  return matches.length&&matches.every(key=>key===matches[0])?matches[0]:undefined;
 }
 function optionComparable(value,sourcePath){
- const normalized=normalizedLabel(value).replace(/[、,，/\\-]/g,'');
+ const labelled=normalizedLabel(value);
+ if(sourcePath.endsWith('.major_category')){
+  const parts=labelled.split(/[、,，/\\>＞-]+/).map(part=>part.replace(/相关类$/,'类')).filter(part=>part&&!/^(?:(?:专业学位|学术学位)?(?:博士|硕士)|(?:研究生|本科|专科|大专|高职)(?:普通教育|成人教育|网络教育|自考)?)$/.test(part));
+  return parts.length===2?parts.join('|'):'';
+ }
+ const normalized=labelled.replace(/[、,，/\\-]/g,'');
+ if(/(^|\.)(is_|has_|accepts_)/.test(sourcePath)||sourcePath.endsWith('.is_highest_degree')){
+  if(['true','是','yes','1'].includes(normalized))return 'true';
+  if(['false','否','no','0'].includes(normalized))return 'false';
+ }
  if(!/(^|\.)(degree|highest_degree)$/.test(sourcePath))return normalized;
  if(/博士/.test(normalized))return 'doctor';
  if(/硕士/.test(normalized))return 'master';
@@ -156,9 +183,11 @@ function optionComparable(value,sourcePath){
 }
 function optionMatchesFact(option,fact){
  const target=optionComparable(fact.value,fact.path);
+ if(fact.path.endsWith('.major_category')&&!target)return false;
  return [option.value,option.label].some(value=>optionComparable(value,fact.path)===target);
 }
-const metadataFieldAliases={projects:{project_name:'name'}};
+const metadataFieldAliases={education:{highest_degree:'is_highest_degree',is_highest:'is_highest_degree'},projects:{project_name:'name'}};
+const virtualFieldKeys={education:new Set(['is_highest_degree'])};
 const personalIntentCityLabels=new Set(['期望城市','意向城市','期望工作地点','意向工作地点'].map(normalizedLabel));
 function matchedIdentityIndex(recordLabel,facts,sectionKey){
  const recordText=normalizedLabel(recordLabel);
@@ -208,11 +237,10 @@ function recordAssignments(fields,facts){
   }
   if(collisions.size)for(const [groupIndex,index] of decided)if(collisions.has(index))decided.set(groupIndex,-1);
   const remaining=sourceRows.filter(index=>!used.has(index)&&!collisions.has(index));
-  const hasIdentified=[...decided.values()].some(index=>index!==null&&index>=0);
+  const hasExistingRecords=[...decided.values()].some(index=>index!==null);
   for(const groupIndex of [...groups.keys()].sort((a,b)=>a-b)){
    if(decided.get(groupIndex)!==null)continue;
-   if(hasIdentified)decided.set(groupIndex,remaining.length?remaining.shift():-1);
-   else decided.set(groupIndex,sourceRows.includes(groupIndex)?groupIndex:-1);
+   decided.set(groupIndex,hasExistingRecords?(remaining.length?remaining.shift():-1):(sourceRows.includes(groupIndex)?groupIndex:-1));
   }
   for(const [groupIndex,groupFields] of groups)for(const field of groupFields)assignments.set(field.id,decided.get(groupIndex));
  }
@@ -232,7 +260,7 @@ function metadataCandidates(field,facts,assignments){
  }
  if(!sectionKey&&!fieldKey)return null;
  const schemaSection=sectionKey&&SECTIONS.find(section=>section.key===sectionKey);
- if(sectionKey&&fieldKey&&!schemaSection?.fields.some(item=>item.key===fieldKey))return [];
+ if(sectionKey&&fieldKey&&!schemaSection?.fields.some(item=>item.key===fieldKey)&&!virtualFieldKeys[sectionKey]?.has(fieldKey))return [];
  let candidates=facts.filter(fact=>{
   const parts=fact.path.split('.');
   return (!sectionKey||parts[0]===sectionKey)&&(!fieldKey||parts.at(-1)===fieldKey);

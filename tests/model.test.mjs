@@ -118,6 +118,63 @@ test('existing page record identities reserve their source rows before blank rec
  assert.equal(resolvePlan({mappings:[{fieldId:'blank-major',sourcePath:'education.1.major'}]},fields,r).length,0);
  assert.equal(resolvePlan({mappings:[{fieldId:'blank-major',sourcePath:'education.0.major'}]},fields,r)[0].value,'人工智能');
 });
+test('education derives safe range and unique highest-degree facts while preserving explicit major category',()=>{
+ const r=normalizeResume({education:[
+  {school:'香港城市大学',degree:'硕士研究生',major:'人工智能',major_category:'本科（普通教育） / 工学 / 计算机类',start_date:'2026-09',end_date:'2027-10'},
+  {school:'北京邮电大学',degree:'本科',major:'通信工程',major_category:'电子信息类',start_date:'2022-09',end_date:'2026-06'}
+ ]});
+ const fields=[
+  {id:'category',label:'专业类别',section:'教育经历',fieldKey:'major_category',groupIndex:0,recordLabel:'香港城市大学',type:'combobox',options:[{value:'理学 / 数学相关类',label:'理学 / 数学相关类'},{value:'工学 / 计算机相关类',label:'工学 / 计算机相关类'}]},
+  {id:'range',label:'起止时间',section:'教育经历',fieldKey:'date_range',groupIndex:0,recordLabel:'香港城市大学'},
+  {id:'highest-master',label:'是否最高学历',section:'教育经历',fieldKey:'is_highest_degree',groupIndex:0,recordLabel:'香港城市大学',type:'radio',options:[{value:'true',label:'是'},{value:'false',label:'否'}]},
+  {id:'highest-bachelor',label:'是否最高学历',section:'教育经历',fieldKey:'highest_degree',groupIndex:1,recordLabel:'北京邮电大学',type:'radio',options:[{value:'1',label:'是'},{value:'0',label:'否'}]}
+ ];
+ const plan=Object.fromEntries(localPlan(fields,r).map(item=>[item.fieldId,[item.sourcePath,item.value]]));
+ assert.deepEqual(plan.category,['education.0.major_category','工学 / 计算机相关类']);
+ assert.deepEqual(plan.range,['education.0.date_range','2026-09 - 2027-10']);
+ assert.deepEqual(plan['highest-master'],['education.0.is_highest_degree','true']);
+ assert.deepEqual(plan['highest-bachelor'],['education.1.is_highest_degree','0']);
+ assert.equal(normalizeResume({personal:{graduate_status:'是'}}).personal.graduate_status,true);
+ assert.equal(normalizeResume({personal:{graduate_status:'否'}}).personal.graduate_status,false);
+});
+test('major category options allow only verified hierarchy normalization, not guessed disciplines',()=>{
+ const field={id:'category',label:'专业类别',section:'教育经历',fieldKey:'major_category',groupIndex:0,type:'combobox',options:[
+  {value:'理学 / 数学相关类',label:'理学 / 数学相关类'},{value:'工学 / 计算机相关类',label:'工学 / 计算机相关类'}
+ ]};
+ const verified=normalizeResume({education:[{school:'示例大学',major_category:'本科（普通教育） / 理学 / 数学类'}]});
+ assert.deepEqual(localPlan([field],verified).map(item=>item.value),['理学 / 数学相关类']);
+ const professionalMaster=normalizeResume({education:[{school:'示例大学',major_category:'专业学位硕士 / 理学 / 数学类'}]});
+ assert.deepEqual(localPlan([field],professionalMaster).map(item=>item.value),['理学 / 数学相关类']);
+ const incomplete=normalizeResume({education:[{school:'示例大学',major_category:'数学类'}]});
+ assert.equal(localPlan([field],incomplete).length,0);
+ const ambiguousElectronic=normalizeResume({education:[{school:'示例大学',major_category:'专业学位硕士 / 工学 / 电子信息类'}]});
+ assert.equal(localPlan([field],ambiguousElectronic).length,0);
+ const unknownPrefix=normalizeResume({education:[{school:'示例大学',major_category:'未知层级 / 理学 / 数学类'}]});
+ assert.equal(localPlan([field],unknownPrefix).length,0);
+ const invalidOptions={...field,options:[{value:'数学相关类',label:'数学相关类'},{value:'未知类别',label:'未知类别'}]};
+ assert.equal(localPlan([invalidOptions],incomplete).length,0);
+ assert.equal(localPlan([invalidOptions],unknownPrefix).length,0);
+});
+test('project facts never cross into campus fields and campus fields require real campus facts',()=>{
+ const r=normalizeResume({projects:[{name:'多智能体简历助手',description:'实现表单智能填写'}],cadre_experiences:[{organization:'团委宣传部',position:'干事',work_content:'负责宣传'}]});
+ const campusField={id:'campus',label:'校园经历描述',section:'校园经历',fieldKey:'work_content',groupIndex:0,recordLabel:'团委宣传部'};
+ assert.deepEqual(localPlan([campusField],r).map(item=>[item.sourcePath,item.value]),[['cadre_experiences.0.work_content','负责宣传']]);
+ assert.equal(resolvePlan({mappings:[{fieldId:'campus',sourcePath:'projects.0.description'}]},[campusField],r).length,0);
+ const noCampus=normalizeResume({projects:[{name:'多智能体简历助手',description:'实现表单智能填写'}]});
+ assert.equal(localPlan([campusField],noCampus).length,0);
+});
+test('an explicit month range safely restores missing endpoints without inventing campus dates',()=>{
+ const r=normalizeResume({
+  projects:[{name:'项目甲',date_range:'2026-09 - 至今'},{name:'项目乙',date_range:'2025-10 至 2026-06'}],
+  cadre_experiences:[{organization:'团委宣传部',position:'部员',work_content:'参与学院公众号运营、活动报道与文案撰写'}]
+ });
+ assert.deepEqual([r.projects[0].start_date,r.projects[0].end_date],['2026-09','至今']);
+ assert.deepEqual([r.projects[1].start_date,r.projects[1].end_date],['2025-10','2026-06']);
+ assert.equal(r.cadre_experiences[0].start_date,'');
+ assert.equal(r.cadre_experiences[0].end_date,'');
+ const facts=flattenResume(r);
+ assert.equal(facts.find(item=>item.path==='projects.0.end_date').value,'至今');
+});
 test('a unique singleton label can match without metadata while unrelated cross-section metadata is rejected',()=>{
  const r=normalizeResume({job_intention:{preferred_city:'深圳'},education:[{school:'示例大学'}],work_experience:[{company:'示例公司'}]});
  const singleton=localPlan([{id:'city',label:'期望工作地点',type:'combobox'}],r);
@@ -142,3 +199,14 @@ test('endpoint rejects insecure remote hosts and credentials; supports full endp
 test('custom API request, matching, resume parsing and error handling against real local HTTP server',async()=>{let last;let mode='match';const server=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;last={path:req.url,headers:req.headers,body:JSON.parse(body)};if(mode==='error'){res.writeHead(401).end('secret-token-should-not-echo');return;}const content=mode==='parse'?{personal:{name:'林测试'},education:[{school:'示例大学'}]}:{mappings:[{fieldId:'a',sourcePath:'personal.name'}]};res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(content)}}]}));});await new Promise(r=>server.listen(0,'127.0.0.1',r));try{const settings={baseUrl:`http://127.0.0.1:${server.address().port}/v1`,model:'test-model',apiKey:'test-key'};const items=await matchFields([{id:'a',label:'姓名',placeholder:'请输入姓名',helpText:'与证件一致',context:'基本信息 > 申请人',recordLabel:'基本资料',value:'existing-private',section:'personal',groupIndex:0,groupCount:1,fieldKey:'name',type:'text'}],normalizeResume({personal:{name:'林测试'}}),settings);assert.equal(items[0].value,'林测试');assert.equal(last.path,'/v1/chat/completions');assert.equal(last.headers.authorization,'Bearer test-key');assert.equal(last.body.model,'test-model');const matchPayload=JSON.parse(last.body.messages[1].content);assert.deepEqual(matchPayload.fields[0],{id:'a',label:'姓名',placeholder:'请输入姓名',helpText:'与证件一致',context:'基本信息 > 申请人',recordLabel:'基本资料',type:'text',section:'personal',groupIndex:0,groupCount:1,fieldKey:'name'});assert.ok(!last.body.messages[1].content.includes('existing-private'));mode='parse';const resume=await parseResumeText('姓名：林测试',settings);assert.equal(resume.education[0].school,'示例大学');mode='error';await assert.rejects(requestJSON(settings,'test',{}),e=>e.message==='API 请求失败（HTTP 401）');}finally{await new Promise(r=>server.close(r));}});
 test('new local workbench creates stable persistent identity and preserves settings while saving resumes',async()=>{const data=new Map();globalThis.localStorage={getItem:k=>data.get(k)||null,setItem:(k,v)=>data.set(k,v)};const {loadState,saveResumes,saveSettings}=await import('../extension/lib/storage.js');const first=await loadState();assert.equal((await loadState()).activeId,first.activeId);await saveSettings({baseUrl:'http://localhost:8888/v1',model:'mock',apiKey:'test'});first.resumes[0].personal.name='测试';await saveResumes(first.resumes,first.activeId);assert.equal((await loadState()).settings.model,'mock');assert.equal((await loadState()).resumes[0].personal.name,'测试');delete globalThis.localStorage;});
 test('concurrent profile and API setting saves never overwrite the other domain',async()=>{const data=new Map();globalThis.localStorage={getItem:k=>data.get(k)||null,setItem:(k,v)=>data.set(k,v)};const {loadState,saveResumes,saveSettings}=await import('../extension/lib/storage.js');const first=await loadState();first.resumes[0].personal.name='并发保存';await Promise.all([saveResumes(first.resumes,first.activeId),saveSettings({baseUrl:'https://example.com/v1',model:'concurrent-model',apiKey:'test'})]);const s=await loadState();assert.equal(s.resumes[0].personal.name,'并发保存');assert.equal(s.settings.model,'concurrent-model');delete globalThis.localStorage;});
+
+test('unknown populated records stay protected while a fresh blank record receives unused campus facts',()=>{
+ const resume=normalizeResume({cadre_experiences:[{organization:'示例学生组织',position:'部员',work_content:'活动报道'}]});
+ const fields=[
+  {id:'old',label:'组织名称',section:'校园经历',fieldKey:'organization',groupIndex:0,groupCount:2,recordLabel:'未识别的已有记录'},
+  {id:'fresh',label:'组织名称',section:'校园经历',fieldKey:'organization',groupIndex:1,groupCount:2}
+ ];
+ const plan=localPlan(fields,resume);
+ assert.deepEqual(plan.map(item=>[item.fieldId,item.sourcePath]),[['fresh','cadre_experiences.0.organization']]);
+ assert.equal(resolvePlan({mappings:[{fieldId:'old',sourcePath:'cadre_experiences.0.organization'}]},fields,resume).length,0);
+});

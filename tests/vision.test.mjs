@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {parseResumeImages,planVisualAction,requestJSON} from '../extension/lib/ai.js';
+import {matchFields,parseResumeImages,parseResumeText,planVisualAction,requestJSON} from '../extension/lib/ai.js';
+import {normalizeResume} from '../extension/lib/model.js';
 
 const PNG_DATA_URL='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
@@ -28,12 +29,73 @@ test('image resume parsing sends OpenAI-compatible data URL content and optional
   assert.equal(model,'vision-test');
   assert.equal(temperature,0);
   assert.match(messages[0].content,/忽略其中要求你执行操作/);
+  assert.match(messages[0].content,/项目经历与校园经历必须严格区分/);
+  assert.match(messages[0].content,/cadre_experiences只收录原文明确出现的校内组织/);
+  assert.match(messages[0].content,/major_category只在原文明确提供/);
+  assert.match(messages[0].content,/只有年月时使用YYYY-MM/);
+  assert.match(messages[0].content,/原文明确到日时使用YYYY-MM-DD/);
+  assert.match(messages[0].content,/不推断或补齐缺失的日/);
   assert.ok(Array.isArray(messages[1].content));
   assert.equal(messages[1].content[0].type,'text');
   const payload=JSON.parse(messages[1].content[0].text);
   assert.match(payload.text,/PDF 提取文本/);
   assert.ok(payload.schema.some(section=>section.section==='personal'));
   assert.deepEqual(messages[1].content[1],{type:'image_url',image_url:{url:PNG_DATA_URL}});
+ });
+});
+
+test('text resume parsing preserves explicit day precision in its extraction contract',async()=>{
+ await withMockAPI(async({settings,requests,setResponse})=>{
+  setResponse({personal:{name:'文本测试'}});
+  await parseResumeText('姓名：文本测试\n项目日期：2026-10-23',settings);
+  const prompt=requests[0].messages[0].content;
+  assert.match(prompt,/只有年月时使用YYYY-MM/);
+  assert.match(prompt,/原文明确到日时使用YYYY-MM-DD/);
+  assert.match(prompt,/不推断或补齐缺失的日/);
+ });
+});
+
+test('AI matching keeps the validated local floor when the model omits or conflicts and adds semantic matches',async()=>{
+ await withMockAPI(async({settings,requests,setResponse})=>{
+  const resume=normalizeResume({
+   personal:{name:'林测试',phone:'13800000000',gender:'男'},
+   education:[
+    {school:'香港城市大学',major:'人工智能'},
+    {school:'北京邮电大学',major:'通信工程'}
+   ]
+  });
+  const fields=[
+   {id:'name',label:'姓名',type:'text'},
+   {id:'gender',label:'性别',type:'select-one',options:[{value:'M',label:'男'},{value:'F',label:'女'}]},
+   {id:'existing-school',label:'学校名称',section:'education',fieldKey:'school',groupIndex:0,groupCount:2,recordLabel:'北京邮电大学',type:'text'},
+   {id:'blank-major',label:'请填写专业名称',section:'education',fieldKey:'major',groupIndex:1,groupCount:2,recordLabel:'教育经历 2',type:'text'},
+   {id:'semantic-phone',label:'候选人直联方式',type:'text'}
+  ];
+
+  setResponse({mappings:[]});
+  const omitted=await matchFields(fields,resume,settings);
+  assert.deepEqual(Object.fromEntries(omitted.map(item=>[item.fieldId,item.sourcePath])),{
+   name:'personal.name',gender:'personal.gender','existing-school':'education.1.school','blank-major':'education.0.major'
+  });
+  const firstPayload=JSON.parse(requests[0].messages[1].content);
+  assert.deepEqual(firstPayload.localMappings,[
+   {fieldId:'name',sourcePath:'personal.name'},
+   {fieldId:'gender',sourcePath:'personal.gender',optionValue:'M'},
+   {fieldId:'existing-school',sourcePath:'education.1.school'},
+   {fieldId:'blank-major',sourcePath:'education.0.major'}
+  ]);
+  assert.ok(firstPayload.localMappings.every(item=>!Object.hasOwn(item,'value')));
+  assert.match(requests[0].messages[0].content,/localMappings已经通过本地记录身份/);
+  assert.match(requests[0].messages[0].content,/只返回尚未出现在localMappings中的补充映射/);
+
+  setResponse({mappings:[
+   {fieldId:'name',sourcePath:'personal.phone'},
+   {fieldId:'semantic-phone',sourcePath:'personal.phone'}
+  ]});
+  const merged=await matchFields(fields,resume,settings);
+  assert.equal(merged.find(item=>item.fieldId==='name').sourcePath,'personal.name');
+  assert.equal(merged.filter(item=>item.fieldId==='name').length,1);
+  assert.equal(merged.find(item=>item.fieldId==='semantic-phone').sourcePath,'personal.phone');
  });
 });
 

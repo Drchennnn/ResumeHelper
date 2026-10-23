@@ -16,6 +16,16 @@ test('content messages receive allowed profile facts but never API settings or p
   const facts=await send({type:'RESUME_FACTS',resumeId:'demo'});assert.ok(facts.facts.some(f=>f.value==='林测试'));
   const denied=await send({type:'TEST_API'});assert.equal(denied.ok,false);
   assert.equal((await send({type:'SET_CONTROL_SETTINGS',enabled:true})).ok,false,'网页内容脚本不能提升调试权限');
+  for(const type of ['ATTACHMENTS_LIST','ATTACHMENT_TARGETS','ATTACHMENT_APPLY'])assert.equal((await send({type,tabId:7,resumeId:'demo'})).ok,false,'网页不能读取附件库或指挥附件上传');
+  let activeUrl='https://jobs.example.test/apply';
+  chrome.tabs={query:async()=>[{id:7,url:activeUrl}]};
+  chrome.scripting={executeScript:async()=>[{result:[{id:'rh-upload-test-12345678',label:'简历'}]}]};
+  const extension={id:'test-extension',url:'chrome-extension://test-extension/popup.html'};
+  assert.equal((await send({type:'ATTACHMENT_TARGETS',tabId:8},extension)).ok,false,'不能操作非当前标签页');
+  assert.equal((await send({type:'ATTACHMENT_APPLY',tabId:7,targetId:'rh-upload-test-12345678',attachmentId:'x'},extension)).ok,false,'未经扫描的文件控件不能填写');
+  assert.equal((await send({type:'ATTACHMENT_TARGETS',tabId:7},extension)).targets.length,1);
+  activeUrl='https://jobs.example.test/different';
+  assert.equal((await send({type:'ATTACHMENT_APPLY',tabId:7,targetId:'rh-upload-test-12345678',attachmentId:'x'},extension)).ok,false,'页面导航后旧预览必须失效');
   assert.equal((await send({type:'CONTROL_FILL',resumeId:'demo',fieldId:'x',sourcePath:'personal.name'})).reason,'browser_control_disabled');
   assert.equal(await send({type:'PANEL_STATE'},{...page,id:'forged'}),undefined);
   assert.equal(await send({type:'PANEL_STATE'},{id:'test-extension',url:page.url}),undefined);

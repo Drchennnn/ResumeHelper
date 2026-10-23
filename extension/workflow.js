@@ -35,6 +35,7 @@
 
   function visible(element) {
     if (!element || element.disabled || element.hidden) return false;
+    if (element.getAttribute?.("aria-disabled") === "true") return false;
     if (element.getAttribute?.("aria-hidden") === "true") return false;
     if (element.closest?.("[hidden],[aria-hidden='true']")) return false;
     const style = globalThis.getComputedStyle?.(element);
@@ -44,10 +45,14 @@
   }
 
   function addButton(root) {
-    return Array.from(root?.querySelectorAll?.("button") || []).find((button) => {
-      const text = String(button.textContent || "").trim();
-      const type = String(button.getAttribute?.("type") || button.type || "button").toLowerCase();
-      return /^(?:[+＋]\s*)?(?:添加|新增)$/.test(text) && type !== "submit" && visible(button) && root.contains(button);
+    return Array.from(root?.querySelectorAll?.("button,[role='button']") || []).find((candidate) => {
+      const text = String(candidate.textContent || "").trim();
+      const tag = String(candidate.tagName || "").toLowerCase();
+      const role = String(candidate.getAttribute?.("role") || "").toLowerCase();
+      const type = String(candidate.getAttribute?.("type") || candidate.type || "button").toLowerCase();
+      const hasNavigation = candidate.getAttribute?.("href") !== null;
+      const supported = tag === "button" ? type !== "submit" : role === "button" && !hasNavigation;
+      return supported && /^(?:[+＋]\s*)?(?:添加|新增)$/.test(text) && visible(candidate) && root.contains(candidate);
     });
   }
 
