@@ -41,7 +41,7 @@
 
 ## 开发与验证
 
-需要 Node.js 24+；打包 ZIP 额外使用 Python 3 标准库。
+需要 Node.js 26+（测试直接运行面向现代浏览器的 PDF.js 模块）；打包 ZIP 额外使用 Python 3 标准库。
 
 ```sh
 npm ci --ignore-scripts

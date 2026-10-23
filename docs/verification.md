@@ -5,6 +5,7 @@
 ## 自动检查
 
 - 47 项 Node 测试：字段扫描、保护已有内容、模型映射、完整字段与选项、数据迁移和存储；PDF 本地提取、真实扫描／混合 PDF 渲染；图片 PNG/JPEG/WebP 头部与尺寸预算；超长文字和损坏 PDF；图片 API 请求及错误处理；导入 UI 预览、取消、显式发送、失败重试和保存。
+- 开发测试使用Node.js 26，提供现代PDF.js依赖的Uint8Array.toHex等API；GitHub CI也使用Node26。首次Node24 CI暴露此运行时不匹配后已调整。
 - JS/MJS 语法、manifest 入口、HTML资源和 PDF worker/decoder 存在性检查。
 - npm audit：未发现已知漏洞。PDF.js固定6.4.299，许可证随资源保留。
 - 文件上限之外另检查原图边长16000、总像素33554432；PDF Canvas预算64MiB，文字流累计10万字符。资源预算降低风险，不能保证任意恶意文档都可正常处理。

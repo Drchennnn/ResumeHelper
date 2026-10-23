@@ -18,5 +18,8 @@
   "devDependencies": {
     "@napi-rs/canvas": "1.0.13"
   },
-  "description": "Personal Chrome resume workbench with local PDF extraction and custom vision API import"
+  "description": "Personal Chrome resume workbench with local PDF extraction and custom vision API import",
+  "engines": {
+    "node": ">=26.0.0"
+  }
 }
