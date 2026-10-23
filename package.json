@@ -1,0 +1,22 @@
+{
+  "name": "resume-helper",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fixtures:documents": "node fixtures/generate-resume-files.mjs",
+    "vendor:pdfjs": "node scripts/vendor-pdfjs.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "dev": "node scripts/dev-server.mjs",
+    "dev:mock": "node scripts/dev-server.mjs --mock-api",
+    "package": "python3 scripts/package.py"
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.4.299"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "1.0.13"
+  },
+  "description": "Personal Chrome resume workbench with local PDF extraction and custom vision API import"
+}

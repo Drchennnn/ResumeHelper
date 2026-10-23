@@ -1,0 +1,6 @@
+extension/vendor/** -whitespace
+*.pdf binary
+*.png binary
+*.bcmap binary
+*.pfb binary
+*.ttf binary

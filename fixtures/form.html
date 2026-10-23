@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>简历工作台测试表单</title>
+    <style>
+      :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17324d; background: #f6f5f1; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 40px 20px; }
+      main { max-width: 840px; margin: 0 auto; }
+      header { margin-bottom: 28px; }
+      h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: 0; }
+      p { margin: 0; color: #587083; }
+      form { display: grid; gap: 18px; }
+      fieldset { margin: 0; padding: 22px; border: 1px solid #cbd6dc; border-radius: 8px; background: #fff; }
+      legend { padding: 0 8px; font-weight: 700; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+      label { display: grid; gap: 7px; font-size: 14px; font-weight: 650; }
+      input, textarea, select, button { width: 100%; min-height: 42px; border: 1px solid #aebdc6; border-radius: 6px; padding: 9px 11px; font: inherit; background: #fff; color: #17324d; }
+      textarea { min-height: 100px; resize: vertical; }
+      input:focus, textarea:focus, select:focus { outline: 3px solid #b8e2d6; border-color: #16745e; }
+      .wide { grid-column: 1 / -1; }
+      .check { display: flex; align-items: center; gap: 9px; font-weight: 500; }
+      .check input { width: 18px; min-height: 18px; }
+      .actions { display: flex; gap: 12px; }
+      button { width: auto; border-color: #16745e; color: #16745e; font-weight: 700; cursor: pointer; }
+      button[type="submit"] { color: white; background: #16745e; }
+      output { display: block; margin-top: 18px; min-height: 24px; font-weight: 650; color: #16745e; }
+      @media (max-width: 640px) { body { padding: 24px 12px; } .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>网申填写测试台</h1>
+        <p>用于验证字段扫描、非空保护、动态字段和原生事件。</p>
+      </header>
+
+      <form id="application-form">
+        <fieldset data-section="基本信息">
+          <legend>基本信息</legend>
+          <div class="grid">
+            <label>姓名<input name="fullName" autocomplete="name" maxlength="80"></label>
+            <label>邮箱<input type="email" name="email" autocomplete="email"></label>
+            <label>电话<input type="tel" name="phone" autocomplete="tel"></label>
+            <label>期望城市
+              <select name="city">
+                <option value="">请选择</option>
+                <option value="hk">香港</option>
+                <option value="sz">深圳</option>
+                <option value="gz">广州</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset data-section="教育经历">
+          <legend>教育经历</legend>
+          <div class="grid">
+            <label>学校<input name="school" placeholder="学校全称"></label>
+            <label>学历
+              <select name="degree">
+                <option value="">请选择</option>
+                <option value="bachelor">本科</option>
+                <option value="master">硕士</option>
+                <option value="doctor">博士</option>
+              </select>
+            </label>
+            <label class="wide">专业<input name="major"></label>
+          </div>
+        </fieldset>
+
+        <fieldset data-section="项目经历">
+          <legend>项目经历</legend>
+          <div class="grid" id="project-fields">
+            <label>项目名称<input name="projectName"></label>
+            <label>项目角色<input name="projectRole" value="个人开发者"></label>
+            <label class="wide">项目描述<textarea name="projectDescription" maxlength="1200"></textarea></label>
+          </div>
+          <button type="button" id="add-project">新增项目字段</button>
+        </fieldset>
+
+        <fieldset data-section="确认">
+          <legend>确认</legend>
+          <label class="check"><input type="checkbox" name="consent">我确认以上资料准确</label>
+        </fieldset>
+
+        <div class="actions">
+          <button type="submit">模拟提交</button>
+        </div>
+      </form>
+      <output id="status" aria-live="polite">提交次数：0</output>
+    </main>
+
+    <script>
+      let projectIndex = 1;
+      let submitCount = 0;
+      document.querySelector("#add-project").addEventListener("click", () => {
+        projectIndex += 1;
+        const label = document.createElement("label");
+        label.className = "wide";
+        label.textContent = `补充项目 ${projectIndex}`;
+        const input = document.createElement("input");
+        input.name = `projectExtra${projectIndex}`;
+        label.append(input);
+        document.querySelector("#project-fields").append(label);
+      });
+      document.querySelector("#application-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        submitCount += 1;
+        document.querySelector("#status").textContent = `提交次数：${submitCount}`;
+      });
+    </script>
+  <script src="bridge.js"></script><script src="../extension/content.js"></script><script src="../extension/floating.js"></script><script type="module" src="integration.js"></script></body>
+</html>
