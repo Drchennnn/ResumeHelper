@@ -50,7 +50,7 @@ class FakeShadow extends FakeNode {
     this.markup = value;
     const selectors = [
       ".launcher", ".panel", ".resume", ".edit", ".scan", ".selected", ".assist", ".status",
-      ".prepare", ".stop", ".issues",
+      ".prepare", ".stop", ".issues", ".local", ".browser-control", ".vision-fallback", ".control-state", ".api-detail",
       ".preview", ".summary", ".items", ".ai", ".overwrite", ".confirm", ".facts",
       ".facts-list", ".picker", ".minimize", ".close", ".facts-close",
     ];
@@ -153,7 +153,7 @@ test("panel initializes once, marks its host, and loads only public resume metad
   vm.runInContext(source, harness.context);
   assert.equal(harness.shadow.querySelector(".panel").hidden, false, "重复注入应重新打开现有面板");
   assert.equal(harness.shadow.querySelector(".launcher").hidden, true);
-  assert.equal(harness.calls.length, 1, "重复注入不应创建第二个面板或重复读取状态");
+  assert.equal(harness.calls.length, 2, "重新打开应刷新资料列表，但不创建第二个面板");
 });
 
 test("scan uses LOCAL_MATCH, renders checked preview, and applies selected values without submitting", async () => {
@@ -173,7 +173,7 @@ test("scan uses LOCAL_MATCH, renders checked preview, and applies selected value
 
   await harness.shadow.querySelector(".confirm").onclick({ isTrusted: true });
   assert.deepEqual(JSON.parse(JSON.stringify(harness.applyCalls)), [{ items: [{ fieldId: "field-1", value: "林测试" }], overwrite: false }]);
-  assert.match(harness.shadow.querySelector(".status").textContent, /成功 1 项.*已重新识别.*剩余 1 项/);
+  assert.match(harness.shadow.querySelector(".status").textContent, /成功 1 项.*仍有 1 个空字段，其中 1 项已匹配/);
 });
 
 test("prepare is explicit, derives only collection counts from RESUME_FACTS, then rescans", async () => {
@@ -199,7 +199,7 @@ test("prepare is explicit, derives only collection counts from RESUME_FACTS, the
   assert.equal(harness.workflowCalls.length, 0, "初始化和普通扫描不得暗中新增条目");
   await harness.shadow.querySelector(".prepare").onclick({ isTrusted: true });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.workflowCalls)), [{ education: 2, work_experience: 1, projects: 1, certificate: 1, language_skills: 1 }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.workflowCalls)), [{ education: 2, internships: 1, cadre_experiences: 0, work_experience: 1, projects: 1, certificate: 1, language_skills: 1 }]);
   assert.equal(harness.calls.at(-1).type, "LOCAL_MATCH", "新增后应重新识别并生成本地预览");
   assert.equal(harness.shadow.querySelector(".preview").hidden, false);
   assert.match(harness.shadow.querySelector(".status").textContent, /已新增 2 条经历并重新识别/);
@@ -240,7 +240,7 @@ test("apply lists at most ten actionable failures and rematches only empty field
   assert.match(rendered, /字段 0：未找到匹配选项/);
   assert.match(rendered, /手动打开下拉或日期后重试；仍失败可辅助填写复制资料自行选择/);
   assert.doesNotMatch(rendered, /原始异常不应展示|已有内容不应显示|虚构值/);
-  assert.match(harness.shadow.querySelector(".status").textContent, /剩余 11 项可填写/);
+  assert.match(harness.shadow.querySelector(".status").textContent, /仍有 11 个空字段，其中 11 项已匹配/);
 });
 
 test("stop button cancels an active bridge apply and hides after the operation settles", async () => {
@@ -270,7 +270,7 @@ test("stop button cancels an active bridge apply and hides after the operation s
   assert.equal(harness.applyCalls.length, 1, "停止后不得发起第二次页面写入");
   assert.equal(harness.calls.filter((call) => call.type === "LOCAL_MATCH").length, 2, "停止后只复扫剩余空字段");
   assert.equal(harness.calls.some((call) => call.type === "MATCH"), false, "停止后的复扫不得自动调用 AI");
-  assert.match(harness.shadow.querySelector(".status").textContent, /已停止当前操作.*剩余 1 项可填写/);
+  assert.match(harness.shadow.querySelector(".status").textContent, /已停止当前操作.*仍有 1 个空字段，其中 1 项已匹配/);
   assert.equal(harness.shadow.querySelector(".issues").hidden, true, "取消项不应被误报为字段失败");
 });
 
@@ -354,4 +354,46 @@ test("source declares every panel protocol and never requests an API key", () =>
   assert.doesNotMatch(source, /apiKey/);
   assert.match(source, /data-personal-resume-ui|personalResumeUi/);
   assert.match(source, /助手不会自动提交/);
+});
+
+test('AI scan understands fields by default and keeps its remaining plan after partial apply', async () => {
+  const fields=[{id:'major',label:'所学方向',type:'text',value:''},{id:'description',label:'你做过什么',type:'textarea',value:''}];
+  let scans=0;
+  const harness=createHarness(async payload=>{
+    if(payload.type==='PANEL_STATE')return {ok:true,resumes:[{id:'resume-1',name:'AI 简历'}],activeId:'resume-1',aiConfigured:true,apiHost:'api.example.test',control:{enabled:true}};
+    if(payload.type==='LOCAL_MATCH')return {ok:true,items:[]};
+    if(payload.type==='MATCH')return {ok:true,items:[{fieldId:'major',label:'所学方向',sourcePath:'education.0.major',value:'计算机',displayValue:'计算机'},{fieldId:'description',label:'你做过什么',sourcePath:'projects.0.description',value:'已有项目事实',displayValue:'已有项目事实'}]};
+    throw new Error(`Unexpected ${payload.type}`);
+  },{
+    scan:async()=>({fields:++scans===1?fields:fields.map(field=>field.id==='major'?{...field,value:'计算机'}:field)}),
+    apply:async()=>[{fieldId:'major',status:'applied'},{fieldId:'description',status:'skipped',reason:'too_long'}],
+  });
+  await tick();
+  await harness.shadow.querySelector('.scan').onclick({isTrusted:true});
+  assert.equal(harness.calls.filter(call=>call.type==='MATCH').length,1);
+  assert.equal(harness.shadow.querySelector('.items').querySelectorAll('input:checked').length,2);
+  await harness.shadow.querySelector('.confirm').onclick({isTrusted:true});
+  assert.equal(harness.calls.filter(call=>call.type==='MATCH').length,1,'复扫不得暗中再次发送资料');
+  assert.equal(harness.shadow.querySelector('.items').querySelectorAll('input:checked').length,1,'保留未完成的 AI 语义映射');
+  assert.match(harness.shadow.querySelector('.status').textContent,/仍有 1 个空字段，其中 1 项已匹配/);
+  assert.equal(harness.shadow.querySelector('.status').dataset.tone,'error','跳过不应显示全部成功');
+  assert.match(harness.shadow.querySelector('.issues').children[1].children[0].textContent,/超过网页允许的字数/);
+  assert.equal(harness.applyCalls[0].items[0].sourcePath,'education.0.major');
+});
+
+test('local-only scan never calls AI and reopen refreshes a deleted or renamed selected profile', async () => {
+  let updated=false;
+  const harness=createHarness(async payload=>{
+    if(payload.type==='PANEL_STATE')return {ok:true,resumes:[updated?{id:'new',name:'更新的简历'}:{id:'old',name:'旧简历'}],activeId:updated?'new':'old',aiConfigured:true};
+    if(payload.type==='LOCAL_MATCH')return {ok:true,items:[]};
+    throw new Error(`Unexpected ${payload.type}`);
+  });
+  await tick();
+  await harness.shadow.querySelector('.local').onclick({isTrusted:true});
+  assert.equal(harness.calls.some(call=>call.type==='MATCH'),false);
+  updated=true;
+  await harness.context.__personalResumeFloatingPanel.reopen();
+  assert.equal(harness.shadow.querySelector('.resume').value,'new');
+  assert.equal(harness.shadow.querySelector('.resume').children[0].textContent,'更新的简历');
+  assert.equal(harness.shadow.querySelector('.preview').hidden,true,'资料被删除替换后旧计划不能继续应用');
 });

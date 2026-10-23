@@ -1,1 +1,19 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>简历工作台</title><link rel="stylesheet" href="popup.css"><body><header><span class="logo">简</span><div><h1>简历工作台</h1><p>你的资料，你的填写助手</p></div></header><label for="resume">使用简历</label><select id="resume"></select><div class="actions"><button id="floating">显示页面悬浮助手</button><button id="scan">识别当前页面</button><button id="manage" class="secondary">管理资料与 API</button></div><p id="status" role="status">先识别页面，检查匹配结果后再填写。</p><section id="preview" hidden><div class="preview-title"><h2>匹配预览</h2><span id="count"></span></div><p class="hint">AI 匹配将向你配置的 API 发送字段标签与当前简历资料。勾选要填写的项目。</p><button id="ai" class="secondary">发送资料并用 AI 匹配</button><div id="rows"></div><label class="check"><input type="checkbox" id="overwrite">覆盖页面已有内容</label><button id="apply">填写选中项目</button></section><footer>不会自动提交申请 · 无法识别的字段留给你确认</footer><script type="module" src="popup.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>简历工作台</title><link rel="stylesheet" href="popup.css">
+<body>
+<header><span class="logo">简</span><div><h1>简历工作台</h1><p>你的资料，你的填写助手</p></div></header>
+<label for="resume">使用简历</label><select id="resume"></select>
+<div class="actions"><button id="floating">显示页面悬浮助手</button><button id="scan">AI 理解当前页面并预览</button><button id="local" class="secondary">仅本地识别（不调用 API）</button><button id="manage" class="secondary">管理资料与 API</button></div>
+<details><summary>浏览器控制与视觉兜底</summary>
+<p class="hint">DOM 填写失败后，可使用浏览器输入与点击。扩展声明了 Chrome 调试权限，控制功能默认关闭；启用后操作期间显示调试提示，只对当前目标页执行操作，不会自动提交。关闭开关停止使用，移除权限需停用或卸载扩展。</p>
+<button id="control" class="secondary">启用浏览器输入控制</button>
+<p id="control-status" class="hint" role="status"></p>
+<label class="check"><input type="checkbox" id="vision">视觉兜底：失败时发送当前页面截图至配置的 API</label>
+<p class="hint">截图可能含页面上的个人资料，需要支持图片的模型。仅在本次选中字段操作失败时使用。</p>
+</details>
+<p id="status" role="status">先识别页面，检查匹配结果后再填写。</p>
+<section id="preview" hidden><div class="preview-title"><h2>匹配预览</h2><span id="count"></span></div><p class="hint">AI 会结合字段标题、说明和经历上下文理解含义，无需与简历字段名称相同。将发送字段上下文与所选简历资料至配置 API。</p><button id="ai" class="secondary">重新用 AI 匹配</button><div id="rows"></div><label class="check"><input type="checkbox" id="overwrite">覆盖页面已有内容</label><button id="apply">填写选中项目</button></section>
+<footer>不会自动提交申请 · 无法识别的字段留给你确认</footer><script type="module" src="popup.js"></script>
+</body></html>

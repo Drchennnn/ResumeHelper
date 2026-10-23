@@ -16,8 +16,12 @@
   globalThis[INSTALL_KEY] = true;
 
   const fieldElements = new Map();
+  const fieldAnchors = new Map();
+  const controlCandidates = new Map();
+  const candidateIds = new WeakMap();
   const elementIds = new WeakMap();
   let nextFieldId = 1;
+  let nextCandidateId = 1;
   const documentNonce = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
   const MAX_TEXT_LENGTH = 10000;
   const CONTROL_TIMEOUT_MS = 1600;
@@ -40,9 +44,34 @@
     "reset",
     "submit",
   ]);
+  const FIELD_CONTAINER_SELECTOR = [
+    "[id^='formily-item-']", "[data-form-field-i18n-name]", "[data-formily-field]",
+    ".formily-element-form-item", ".semi-form-field", ".semi-form-field-main",
+    "[class*='fieldItem']", "[class*='FieldItem']", "[class*='field-item']",
+    "[class*='form-item']", "[class*='FormItem']",
+  ].join(",");
+  const RECORD_SELECTOR = [
+    "[data-form-array-item]", "[class*='apply-form-array-card-content']",
+    "[class*='formGroupItem']", "[class*='FormGroupItem']", "[class*='form-group-item']",
+    "[class*='form-array-card']",
+  ].join(",");
+  const DANGEROUS_CONTROL_TEXT = /(提交|保存|删除|移除|上传|发送|投递|确认提交|同意|接受|条款|协议|隐私|授权|submit|save|delete|remove|upload|send|agree|accept)/i;
+  const CONTROL_FALLBACK_BLOCKED_REASONS = new Set([
+    "cancelled", "non_empty", "too_long", "option_disabled", "empty_choice",
+    "checkbox_requires_boolean", "radio_value_mismatch", "unsafe_control",
+  ]);
 
   function cleanText(value) {
     return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function shortText(value, limit = 240) {
+    const text = cleanText(value);
+    return text && text.length <= limit ? text : text.slice(0, limit);
+  }
+
+  function fieldContainer(element) {
+    return element?.closest?.(FIELD_CONTAINER_SELECTOR) || null;
   }
 
   function isVisible(element) {
@@ -80,7 +109,17 @@
     if (!element || String(element.tagName || "").toLowerCase() === "select") return false;
     const role = cleanText(element.getAttribute?.("role")).toLowerCase();
     const popup = cleanText(element.getAttribute?.("aria-haspopup")).toLowerCase();
-    return role === "combobox" || ["listbox", "tree", "grid", "dialog"].includes(popup);
+    return role === "combobox" || ["listbox", "tree", "grid", "dialog"].includes(popup) || Boolean(pickerControlRoot(element));
+  }
+
+  function pickerControlRoot(element) {
+    return element?.closest?.([
+      ".ant-select", ".ant-cascader", ".ant-picker", ".semi-select", ".semi-cascader",
+      ".ud__select", ".ud__cascader", ".el-select", ".el-cascader",
+      "[class*='selectWrapper']", "[class*='SelectWrapper']", "[class*='select-wrapper']",
+      "[class*='cascader']", "[class*='Cascader']", "[class*='datePicker']",
+      "[class*='DatePicker']", "[class*='date-picker']",
+    ].join(",")) || null;
   }
 
   function isSensitiveConsentCheckbox(element) {
@@ -123,6 +162,19 @@
       if (text) return disambiguateGroupedLabel(element, text);
     }
 
+    const container = fieldContainer(element);
+    const visualLabel = container?.querySelector?.([
+      "label", ".semi-form-field-label", "[class*='filedName']", "[class*='FiledName']",
+      "[class*='fieldName']", "[class*='FieldName']", "[class*='field-name']",
+      "[class*='form-item-label']", "[class*='FormItem_label']", "[data-formily-label]",
+    ].join(","));
+    const visualText = labelTextWithoutControls(visualLabel);
+    const inputType = String(element.type || "").toLowerCase();
+    if (inputType === "radio" && visualText) {
+      const choice = radioChoiceLabel(element);
+      return disambiguateGroupedLabel(element, choice && choice !== visualText ? `${visualText}：${choice}` : visualText);
+    }
+
     if (element.labels && element.labels.length) {
       const text = Array.from(element.labels)
         .map(labelTextWithoutControls)
@@ -140,15 +192,12 @@
 
       // Formily, Semi Design (Feishu/ByteDance), Ant Design and similar
       // libraries often render the visual label outside the actual control.
-      const fieldContainer = element.closest(
-        "[id^='formily-item-'],[data-form-field-i18n-name],.formily-element-form-item,.semi-form-field,.semi-form-field-main,[class*='form-item'],[class*='FormItem'],[data-formily-field]",
-      );
-      const containerLabel = cleanText(fieldContainer?.getAttribute?.("data-form-field-i18n-name"));
+      const fieldRoot = fieldContainer(element);
+      const containerLabel = cleanText(fieldRoot?.getAttribute?.("data-form-field-i18n-name"));
       if (containerLabel) return disambiguateGroupedLabel(element, containerLabel);
-      const visualLabel = fieldContainer?.querySelector?.(
-        "label,.semi-form-field-label,[class*='form-item-label'],[class*='FormItem_label'],[data-formily-label]",
-      );
-      const text = labelTextWithoutControls(visualLabel);
+      const text = labelTextWithoutControls(fieldRoot?.querySelector?.(
+        "label,.semi-form-field-label,[class*='filedName'],[class*='FiledName'],[class*='fieldName'],[class*='FieldName'],[class*='field-name'],[class*='form-item-label'],[class*='FormItem_label'],[data-formily-label]",
+      ));
       if (text) return disambiguateGroupedLabel(element, text);
     }
 
@@ -196,13 +245,16 @@
     }
   }
 
+  function radioChoiceLabel(element) {
+    return Array.from(element?.labels || []).map(labelTextWithoutControls).filter(Boolean).join(" ") ||
+      cleanText(element?.getAttribute?.("aria-label")) || cleanText(element?.value);
+  }
+
   function getSection(element) {
     if (typeof element.closest !== "function") return undefined;
-    const start = element.closest(
-      "[id^='formily-item-'],[data-form-field-i18n-name],.formily-element-form-item,.semi-form-field,[class*='form-item'],[class*='FormItem'],[data-formily-field]",
-    )?.parentElement || element.parentElement || element;
+    const start = fieldContainer(element)?.parentElement || element.parentElement || element;
     const namedContainer = start.closest(
-      "[data-section],[data-section-title],[aria-label],fieldset,section,[class*='form-section'],[class*='FormSection'],[class*='resume-module'],[class*='applyFormModuleWrapper']",
+      "[data-section],[data-section-title],[aria-label],fieldset,section,[class*='form-section'],[class*='FormSection'],[class*='resume-module'],[class*='applyFormModuleWrapper'],[class*='gridContainer'],[class*='GridContainer']",
     ) || element.closest("[data-section],[aria-label],fieldset,section");
     if (!namedContainer) return undefined;
     const explicit = cleanText(
@@ -212,7 +264,7 @@
     );
     if (explicit) return explicit;
     const heading = namedContainer.querySelector(
-      "legend,h1,h2,h3,h4,h5,h6,[class*='section-title'],[class*='SectionTitle'],[class*='module-title']",
+      "legend,h1,h2,h3,h4,h5,h6,[class*='section-title'],[class*='SectionTitle'],[class*='module-title'],[class*='title']",
     );
     if (heading) return cleanText(heading.textContent) || undefined;
     const first = cleanText(namedContainer.firstElementChild?.textContent);
@@ -264,7 +316,11 @@
       );
       if (explicit) return explicit;
       const selectedValues = selectedPickerValues(element);
-      return selectedValues.length ? selectedValues.join("；") : cleanText(element.textContent);
+      if (selectedValues.length) return selectedValues.join("；");
+      const text = cleanText(element.textContent);
+      const placeholder = cleanText(element.getAttribute?.("placeholder"));
+      if (!text || text === placeholder || /^(请选择|请输入|搜索|select|choose|search)/i.test(text)) return "";
+      return text;
     }
     return element.value == null ? "" : String(element.value);
   }
@@ -292,43 +348,95 @@
     ));
   }
 
+  function elementRect(element) {
+    const rect = element?.getBoundingClientRect?.();
+    if (!rect) return undefined;
+    const result = {
+      x: Number(rect.x ?? rect.left ?? 0),
+      y: Number(rect.y ?? rect.top ?? 0),
+      width: Number(rect.width ?? Math.max(0, (rect.right || 0) - (rect.left || 0))),
+      height: Number(rect.height ?? Math.max(0, (rect.bottom || 0) - (rect.top || 0))),
+    };
+    return Object.values(result).every(Number.isFinite) ? result : undefined;
+  }
+
+  function recordInfo(element) {
+    const record = element.closest?.(RECORD_SELECTOR);
+    if (!record) return {};
+    const collection = record.parentElement?.closest?.(
+      "[id^='formily-item-'][id$='_list'],[data-form-array],[class*='applyFormModuleWrapper'],[class*='form-array'],[class*='gridContainer'],[class*='GridContainer']",
+    ) || record.parentElement;
+    const records = Array.from(collection?.querySelectorAll?.(RECORD_SELECTOR) || [])
+      .filter((candidate) => candidate.parentElement === record.parentElement || candidate === record);
+    const groupIndex = records.indexOf(record);
+    const heading = record.querySelector?.("h1,h2,h3,h4,h5,h6,[class*='recordTitle'],[class*='itemTitle'],[class*='card-title']");
+    let recordLabel = shortText(heading?.textContent, 100);
+    if (!recordLabel) {
+      const controls = Array.from(record.querySelectorAll?.("input,textarea,select,[role='combobox']") || []);
+      const anchor = controls.find((candidate) => {
+        const label = getLabel(candidate);
+        return /(学校|院校|公司|单位|组织|项目名称|school|university|company|project)/i.test(label) &&
+          !/(姓名|手机|电话|邮箱|证件|地址|name|phone|email|identity)/i.test(label) &&
+          cleanText(currentValue(candidate, fieldType(candidate)));
+      });
+      if (anchor) recordLabel = shortText(currentValue(anchor, fieldType(anchor)), 100);
+    }
+    return {
+      record,
+      groupIndex: groupIndex >= 0 ? groupIndex : undefined,
+      groupCount: groupIndex >= 0 ? records.length : undefined,
+      recordLabel: recordLabel || undefined,
+    };
+  }
+
+  function fieldHelpText(element) {
+    const container = fieldContainer(element);
+    const described = cleanText(element.getAttribute?.("aria-describedby"));
+    const describedText = described.split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById?.(id)).filter(Boolean)
+      .map((node) => cleanText(node.textContent)).filter(Boolean).join(" ");
+    if (describedText) return shortText(describedText);
+    const help = container?.querySelector?.(
+      "[class*='help'],[class*='Help'],[class*='tip'],[class*='Tip'],[class*='description'],[class*='Description'],[class*='extra'],[aria-live]",
+    );
+    return shortText(help?.textContent) || undefined;
+  }
+
+  function fieldContext(element, label, section, recordLabel) {
+    return shortText([section, recordLabel, label, fieldHelpText(element)].filter(Boolean).join(" / ")) || undefined;
+  }
+
   function describeField(element) {
     const type = fieldType(element);
+    const label = getLabel(element);
+    const section = getSection(element);
+    const record = recordInfo(element);
     const field = {
       id: getFieldId(element),
-      label: getLabel(element),
+      label,
       type,
       value: currentValue(element, type),
     };
-    const section = getSection(element);
     if (section) field.section = section;
+    const helpText = fieldHelpText(element);
+    if (helpText) field.helpText = helpText;
+    const context = fieldContext(element, label, section, record.recordLabel);
+    if (context) field.context = context;
+    if (record.recordLabel) field.recordLabel = record.recordLabel;
+    if (record.groupIndex !== undefined) field.groupIndex = record.groupIndex;
+    if (record.groupCount !== undefined) field.groupCount = record.groupCount;
+    const rect = elementRect(pickerControlRoot(element) || element);
+    if (rect) field.rect = rect;
     const fieldKey = trustedFieldKey(element);
     if (fieldKey) field.fieldKey = fieldKey;
-    const preciseRecord = element.closest?.(
-      "[class*='apply-form-array-card-content'],[data-form-array-item]",
-    );
-    const record = preciseRecord || element.closest?.("[class*='form-array-card']");
-    if (record) {
-      const collection = record.parentElement?.closest?.(
-        "[id^='formily-item-'][id$='_list'],[data-form-array],[class*='applyFormModuleWrapper'],[class*='form-array']",
-      ) || record.parentElement;
-      const recordSelector = preciseRecord
-        ? "[class*='apply-form-array-card-content'],[data-form-array-item]"
-        : "[class*='form-array-card']";
-      const records = Array.from(collection?.querySelectorAll?.(
-        recordSelector,
-      ) || []);
-      const groupIndex = records.indexOf(record);
-      if (groupIndex >= 0) {
-        field.groupIndex = groupIndex;
-        field.groupCount = records.length;
-      }
-    }
     if (String(element.tagName || "").toLowerCase() === "select") {
       field.options = Array.from(element.options || []).map((option) => ({
         value: String(option.value),
         label: cleanText(option.textContent || option.label),
       }));
+    } else if (type === "radio") {
+      field.options = [{ value: String(element.value || ""), label: radioChoiceLabel(element) }]
+        .filter((option) => option.value && option.label);
     } else if (type === "combobox") {
       const options = visiblePickerOptions(element).map((option) => ({
         value: cleanText(option.getAttribute?.("data-value") || option.getAttribute?.("value") || option.textContent),
@@ -336,6 +444,14 @@
       })).filter((option) => option.label);
       if (options.length) field.options = options;
     }
+    fieldAnchors.set(field.id, {
+      label: field.label,
+      type: field.type,
+      section: field.section || "",
+      recordLabel: field.recordLabel || "",
+      groupIndex: field.groupIndex,
+      groupCount: field.groupCount,
+    });
     return field;
   }
 
@@ -435,7 +551,9 @@
     if (!hasOwnedPopup && (allowDetachedPortal || isActiveOrOpen)) {
       const popupSelector = [
         "[role='listbox']", "[role='tree']", ".ud__select__list", ".semi-select-option-list",
-        ".ant-select-dropdown", ".ant-cascader-menus", ".el-select-dropdown",
+        "[role='dialog']", "[role='grid']", ".ant-select-dropdown", ".ant-cascader-menus",
+        ".ant-picker-dropdown", ".semi-datepicker", ".ud__picker", ".el-select-dropdown",
+        ".el-picker-panel", "[class*='date-picker-panel']", "[class*='DatePickerPanel']",
       ].join(",");
       const popups = Array.from(document.querySelectorAll?.(popupSelector) || []).filter(isVisible);
       // A single visible popup after opening the control is a bounded association.
@@ -470,6 +588,30 @@
       }
     }
     return options;
+  }
+
+  function visibleControlCandidates(element) {
+    const candidates = visiblePickerOptions(element, true);
+    const seen = new Set(candidates);
+    const selector = [
+      "button", "[role='button']", "[role='gridcell']", "[role='cell']",
+      ".ud__picker__cell-interactive-area", ".ant-picker-cell-inner",
+      ".semi-datepicker-day", ".el-date-table td",
+    ].join(",");
+    for (const root of pickerRoots(element, true)) {
+      for (const candidate of root.querySelectorAll?.(selector) || []) {
+        if (seen.has(candidate) || !isVisible(candidate) || isDisabledOption(candidate)) continue;
+        if (candidate.closest?.("[data-personal-resume-ui]")) continue;
+        const label = shortText(
+          candidate.getAttribute?.("aria-label") || candidate.getAttribute?.("title") || candidate.textContent,
+          120,
+        );
+        if (!label || DANGEROUS_CONTROL_TEXT.test(label)) continue;
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
+    return candidates;
   }
 
   function isDisabledOption(option) {
@@ -842,10 +984,242 @@
 
   function cancelApply() {
     activeOperationId += 1;
+    globalThis.__personalResumeFloatingPanel?.resume?.();
+    if (typeof chrome.runtime?.sendMessage === "function") {
+      try { chrome.runtime.sendMessage({ type: "CONTROL_CANCEL" }); } catch (error) { /* optional controller */ }
+    }
     return { cancelled: true };
   }
 
-  async function applyItems(items, overwrite) {
+  function allSupportedElements() {
+    const elements = [];
+    const seen = new Set();
+    for (const root of rootsWithOpenShadows(document)) {
+      for (const element of root.querySelectorAll?.(FIELD_SELECTOR) || []) {
+        if (!seen.has(element) && isSupportedField(element)) {
+          seen.add(element);
+          elements.push(element);
+        }
+      }
+    }
+    return elements;
+  }
+
+  function relocateField(fieldId) {
+    const anchor = fieldAnchors.get(fieldId);
+    if (!anchor) return { reason: "unknown_field" };
+    const matches = allSupportedElements().filter((candidate) => {
+      if (getLabel(candidate) !== anchor.label || fieldType(candidate) !== anchor.type) return false;
+      if ((getSection(candidate) || "") !== anchor.section) return false;
+      const record = recordInfo(candidate);
+      if (anchor.groupIndex !== undefined && record.groupIndex !== anchor.groupIndex) return false;
+      if (anchor.groupCount !== undefined && record.groupCount !== anchor.groupCount) return false;
+      if (anchor.recordLabel && (record.recordLabel || "") !== anchor.recordLabel) return false;
+      return true;
+    });
+    if (matches.length !== 1) return { reason: matches.length ? "relocation_ambiguous" : "relocation_not_found" };
+    fieldElements.set(fieldId, matches[0]);
+    return { element: matches[0] };
+  }
+
+  function resolveField(fieldId) {
+    const current = fieldElements.get(fieldId);
+    if (current?.isConnected && isSupportedField(current)) return { element: current };
+    const relocated = relocateField(fieldId);
+    if (!relocated.element && current && !current.isConnected && relocated.reason === "relocation_not_found") {
+      return { reason: "detached_field" };
+    }
+    return relocated;
+  }
+
+  function targetRoot(element) {
+    return pickerControlRoot(element) || element;
+  }
+
+  function viewportSize() {
+    return {
+      width: Number(globalThis.innerWidth || document.documentElement?.clientWidth || 0),
+      height: Number(globalThis.innerHeight || document.documentElement?.clientHeight || 0),
+    };
+  }
+
+  function isDangerousControl(element) {
+    const type = String(element?.type || "").toLowerCase();
+    if (["file", "submit", "button", "image", "password"].includes(type)) return true;
+    return DANGEROUS_CONTROL_TEXT.test([
+      getLabel(element), element?.textContent, element?.getAttribute?.("aria-label"),
+      element?.getAttribute?.("title"), element?.getAttribute?.("name"),
+    ].map(cleanText).join(" "));
+  }
+
+  function controlTarget(fieldId, options = {}) {
+    const operationId = activeOperationId;
+    const resolved = resolveField(fieldId);
+    if (!resolved.element) return { ok: false, fieldId, blocked: true, reason: resolved.reason, operationId };
+    const element = resolved.element;
+    const type = fieldType(element);
+    const nonempty = hasExistingValue(element, type);
+    const blocked = isDangerousControl(element) || (!options.overwrite && nonempty);
+    const root = targetRoot(element);
+    if (!blocked) {
+      globalThis.__personalResumeFloatingPanel?.suspend?.();
+      root.scrollIntoView?.({ block: "center", inline: "nearest", behavior: "auto" });
+      element.focus?.({ preventScroll: true });
+    }
+    const description = describeField(element);
+    return {
+      ok: !blocked,
+      fieldId,
+      type,
+      label: description.label,
+      section: description.section,
+      recordLabel: description.recordLabel,
+      groupIndex: description.groupIndex,
+      groupCount: description.groupCount,
+      nonempty,
+      blocked,
+      reason: blocked ? (nonempty && !options.overwrite ? "non_empty" : "unsafe_control") : undefined,
+      rect: elementRect(root),
+      viewport: viewportSize(),
+      operationId,
+    };
+  }
+
+  function candidateId(option) {
+    let id = candidateIds.get(option);
+    if (!id) {
+      id = `candidate-${documentNonce}-${nextCandidateId++}`;
+      candidateIds.set(option, id);
+    }
+    controlCandidates.set(id, option);
+    return id;
+  }
+
+  function controlOptions(fieldId) {
+    const operationId = activeOperationId;
+    const resolved = resolveField(fieldId);
+    if (!resolved.element) return { ok: false, fieldId, options: [], reason: resolved.reason, operationId };
+    const element = resolved.element;
+    const roots = pickerRoots(element, true).filter(isVisible);
+    const options = visibleControlCandidates(element).map((option) => ({
+      id: candidateId(option),
+      label: shortText(option.getAttribute?.("aria-label") || option.getAttribute?.("title") || option.textContent, 120),
+      disabled: isDisabledOption(option),
+      rect: elementRect(option),
+    })).filter((option) => option.label && rectIntersectsViewport(option.rect));
+    const pickerRoot = roots.length === 1 ? roots[0] : (pickerControlRoot(element) || element);
+    return {
+      ok: true,
+      fieldId,
+      pickerRect: elementRect(pickerRoot),
+      options,
+      operationId,
+    };
+  }
+
+  function pointInRect(x, y, rect) {
+    return Boolean(rect && Number.isFinite(x) && Number.isFinite(y) &&
+      x >= rect.x && y >= rect.y && x <= rect.x + rect.width && y <= rect.y + rect.height);
+  }
+
+  function rectIntersectsViewport(rect) {
+    const viewport = viewportSize();
+    return Boolean(rect && rect.width > 0 && rect.height > 0 &&
+      rect.x < viewport.width && rect.y < viewport.height &&
+      rect.x + rect.width > 0 && rect.y + rect.height > 0);
+  }
+
+  function pointInActivationZone(x, y, rect) {
+    if (!rect) return false;
+    const insetX = Math.min(rect.width * 0.2, 24);
+    const insetY = Math.min(rect.height * 0.15, 8);
+    return pointInRect(x, y, {
+      x: rect.x + insetX,
+      y: rect.y + insetY,
+      width: Math.max(0, rect.width - insetX * 2),
+      height: Math.max(0, rect.height - insetY * 2),
+    });
+  }
+
+  function pointHitsElement(element, x, y) {
+    if (typeof document.elementFromPoint !== "function") return true;
+    const hit = document.elementFromPoint(x, y);
+    return Boolean(hit && (hit === element || element?.contains?.(hit)));
+  }
+
+  function guardControlPoint(fieldId, x, y, candidateIdValue) {
+    const operationId = activeOperationId;
+    const resolved = resolveField(fieldId);
+    if (!resolved.element) return { ok: false, allowed: false, reason: resolved.reason, operationId };
+    const element = resolved.element;
+    if (isDangerousControl(element)) return { ok: true, allowed: false, reason: "unsafe_control", operationId };
+    const candidate = candidateIdValue ? controlCandidates.get(candidateIdValue) : null;
+    const candidateLabel = shortText(
+      candidate?.getAttribute?.("aria-label") || candidate?.getAttribute?.("title") || candidate?.textContent,
+      120,
+    );
+    if (candidateIdValue && (!candidate || !candidate.isConnected || !isVisible(candidate) ||
+      isDisabledOption(candidate) || DANGEROUS_CONTROL_TEXT.test(candidateLabel))) {
+      return { ok: true, allowed: false, reason: "invalid_candidate", operationId };
+    }
+    const root = targetRoot(element);
+    const targetAllowed = pointInActivationZone(x, y, elementRect(root)) && pointHitsElement(root, x, y);
+    const boundOptions = visibleControlCandidates(element);
+    const optionAllowed = candidate
+      ? boundOptions.includes(candidate) && pointInRect(x, y, elementRect(candidate)) && pointHitsElement(candidate, x, y)
+      : boundOptions.some((option) => !isDisabledOption(option) &&
+        pointInRect(x, y, elementRect(option)) && pointHitsElement(option, x, y));
+    return {
+      ok: true,
+      allowed: Boolean(targetAllowed || optionAllowed),
+      reason: targetAllowed || optionAllowed ? undefined : "outside_control_bounds",
+      operationId,
+    };
+  }
+
+  function verifyControl(fieldId, value) {
+    const operationId = activeOperationId;
+    const resolved = resolveField(fieldId);
+    if (!resolved.element) return { ok: false, verified: false, reason: resolved.reason, operationId };
+    const actual = currentValue(resolved.element, fieldType(resolved.element));
+    const expected = cleanText(value);
+    const verified = normalizedChoice(actual) === normalizedChoice(expected) ||
+      selectedPickerValues(resolved.element).some((selected) => normalizedChoice(selected) === normalizedChoice(expected));
+    return { ok: true, verified, actual: shortText(actual, 200), reason: verified ? undefined : "value_mismatch", operationId };
+  }
+
+  async function requestControlFill(item, overwrite, options, operationId) {
+    if (!item?.sourcePath || typeof chrome.runtime?.sendMessage !== "function") return null;
+    if (operationId !== activeOperationId) return { status: "skipped", reason: "cancelled" };
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "CONTROL_FILL",
+        fieldId: item.fieldId,
+        sourcePath: item.sourcePath,
+        resumeId: options.resumeId,
+        overwrite,
+        vision: options.visionFallback === true,
+        operationId,
+      });
+      if (operationId !== activeOperationId) return { status: "skipped", reason: "cancelled" };
+      const result = response?.result && typeof response.result === "object"
+        ? response.result
+        : (response?.status ? {
+          status: response.status,
+          reason: response.reason,
+          method: response.method,
+          via: response.via,
+        } : null);
+      if (result?.status === "applied" && !verifyControl(item.fieldId, item.value).verified) {
+        return { status: "failed", reason: "control_verification_failed" };
+      }
+      return result;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function applyItems(items, overwrite, options = {}) {
     if (!Array.isArray(items)) return [];
     const operationId = ++activeOperationId;
     const results = [];
@@ -856,28 +1230,38 @@
           results.push({ fieldId, status: "skipped", reason: "cancelled" });
           continue;
         }
-        const element = fieldElements.get(fieldId);
-        if (!element) { results.push({ fieldId, status: "skipped", reason: "unknown_field" }); continue; }
-        if (!element.isConnected) {
-          fieldElements.delete(fieldId);
-          results.push({ fieldId, status: "skipped", reason: "detached_field" }); continue;
-        }
-        if (!isSupportedField(element)) { results.push({ fieldId, status: "skipped", reason: "unavailable_field" }); continue; }
+        const resolved = resolveField(fieldId);
+        const element = resolved.element;
+        if (!element) { results.push({ fieldId, status: "skipped", reason: resolved.reason }); continue; }
         const type = fieldType(element);
         if (!overwrite && hasExistingValue(element, type)) {
           results.push({ fieldId, status: "skipped", reason: "non_empty" }); continue;
         }
-        const result = await applyValue(element, item.value, operationId);
+        let result = await applyValue(element, item.value, operationId);
+        if (result.status !== "applied" && !CONTROL_FALLBACK_BLOCKED_REASONS.has(result.reason) &&
+          options.browserControl === true) {
+          result = await requestControlFill(item, overwrite, options, operationId) || result;
+        }
         results.push({ fieldId, ...result });
       } catch (error) {
-        results.push({ fieldId, status: "failed", reason: "exception" });
+        const fallback = options.browserControl === true
+          ? await requestControlFill(item, overwrite, options, operationId) : null;
+        results.push({ fieldId, ...(fallback || { status: "failed", reason: "exception" }) });
       }
     }
     return results;
   }
 
   // Shared only within Chrome's isolated extension world; no page message bridge.
-  globalThis.__personalResumeBridge = {scan: scanPage, apply: applyItems, cancel: cancelApply};
+  globalThis.__personalResumeBridge = {
+    scan: scanPage,
+    apply: applyItems,
+    cancel: cancelApply,
+    controlTarget,
+    controlOptions,
+    verifyControl,
+    guardControlPoint,
+  };
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!sender || sender.id !== chrome.runtime.id) return false;
     if (!message || typeof message !== "object") return false;
@@ -886,13 +1270,34 @@
       return false;
     }
     if (message.type === "APPLY") {
-      applyItems(message.items, message.overwrite === true)
+      applyItems(message.items, message.overwrite === true, message.options || {})
         .then((results) => sendResponse({ results }))
         .catch(() => sendResponse({ results: [], error: "apply_failed" }));
       return true;
     }
     if (message.type === "CANCEL") {
       sendResponse(cancelApply());
+      return false;
+    }
+    if (message.type === "CONTROL_TARGET") {
+      sendResponse(controlTarget(message.fieldId, { overwrite: message.overwrite === true }));
+      return false;
+    }
+    if (message.type === "CONTROL_OPTIONS") {
+      sendResponse(controlOptions(message.fieldId));
+      return false;
+    }
+    if (message.type === "CONTROL_VERIFY") {
+      sendResponse(verifyControl(message.fieldId, message.value));
+      return false;
+    }
+    if (message.type === "CONTROL_GUARD") {
+      sendResponse(guardControlPoint(message.fieldId, Number(message.x), Number(message.y), message.candidateId));
+      return false;
+    }
+    if (message.type === "CONTROL_END") {
+      globalThis.__personalResumeFloatingPanel?.resume?.();
+      sendResponse({ ok: true });
       return false;
     }
     return false;

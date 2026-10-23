@@ -3,15 +3,17 @@
 
   const API_KEY = "__personalResumeWorkflow";
   if (globalThis[API_KEY]?.prepare) return;
-  const RECORD_SELECTOR = "[class*='apply-form-array-card-content'],[data-resume-helper-record]";
+  const RECORD_SELECTOR = "[class*='apply-form-array-card-content'],[data-resume-helper-record],[class*='formGroupItem']";
   const MAX_ADDITIONS = 30;
   const DEFAULT_TIMEOUT_MS = 2500;
   const SECTIONS = [
-    { key: "education", id: "formily-item-education_list" },
+    { key: "education", id: "formily-item-education_list", jdId: "edu", title: "教育经历" },
+    { key: "internships", jdId: "experience", title: "实习经历" },
+    { key: "cadre_experiences", jdId: "campus", title: "校园经历" },
     { key: "work_experience", id: "formily-item-career_list" },
-    { key: "projects", id: "formily-item-project_list" },
+    { key: "projects", id: "formily-item-project_list", jdId: "program", title: "项目经历" },
     { key: "certificate", id: "formily-item-certificate_list" },
-    { key: "language_skills", id: "formily-item-language_list" },
+    { key: "language_skills", id: "formily-item-language_list", jdId: "skill", title: "语言/证书/技能" },
   ];
 
   let activeRun = null;
@@ -45,7 +47,7 @@
     return Array.from(root?.querySelectorAll?.("button") || []).find((button) => {
       const text = String(button.textContent || "").trim();
       const type = String(button.getAttribute?.("type") || button.type || "button").toLowerCase();
-      return (text === "添加" || text === "新增") && type !== "submit" && visible(button) && root.contains(button);
+      return /^(?:[+＋]\s*)?(?:添加|新增)$/.test(text) && type !== "submit" && visible(button) && root.contains(button);
     });
   }
 
@@ -85,8 +87,13 @@
       for (const spec of SECTIONS) {
         cancelled(run);
         const desired = requestedCount(counts, spec.key);
-        const root = document.getElementById(spec.id)
+        let root = (spec.id && document.getElementById(spec.id))
           || document.querySelector?.(`[data-resume-helper-section='${spec.key}']`);
+        if (!root && spec.jdId && globalThis.location?.hostname === "campus.jd.com") {
+          const candidate = document.getElementById(spec.jdId);
+          const heading = candidate?.querySelector?.("[class*='titleContainer']");
+          if (String(candidate?.className || "").includes("gridContainer") && String(heading?.textContent || "").trim().startsWith(spec.title)) root = candidate;
+        }
         if (!root) {
           sections.push({ key: spec.key, desired, before: 0, added: 0, after: 0, remaining: desired, status: "unsupported" });
           continue;

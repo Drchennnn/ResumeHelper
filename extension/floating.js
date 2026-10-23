@@ -61,13 +61,18 @@
       <div class="body">
         <div class="resume-row"><select class="resume" aria-label="当前简历"></select><button class="secondary edit" type="button">编辑简历</button></div>
         <div class="actions">
-          <button class="action scan" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>一键填写</button>
-          <button class="action selected" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"/></svg>选区填写</button>
+          <button class="action scan" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>AI 理解并预览</button>
+          <button class="action selected" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"/></svg>AI 选区匹配</button>
+          <button class="secondary local" type="button">仅本地识别（不调用 API）</button>
           <button class="action secondary-action assist" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>辅助填写</button>
           <button class="action secondary-action prepare" type="button">补齐经历条目并重新识别</button>
           <button class="secondary stop" type="button" hidden>停止当前操作</button>
         </div>
-        <p class="control-help">复杂下拉无法打开或找不到选项时，请先手动打开控件，再使用辅助填写或重新识别。</p>
+        <p class="control-help api-detail">AI 匹配会发送字段说明、经历上下文及所选简历资料至配置的 API；请先检查预览。</p>
+        <label class="toggle"><input class="browser-control" type="checkbox">DOM 失败后使用浏览器输入控制</label>
+        <p class="control-help control-state">可在扩展图标的“浏览器控制与视觉兜底”中启用；扩展安装时声明调试权限。</p>
+        <label class="toggle"><input class="vision-fallback" type="checkbox" disabled>视觉兜底：失败时发送当前页面截图至 API</label>
+        <p class="control-help">视觉模型只在当前字段及其菜单内有限步尝试；仍失败时会说明原因。</p>
         <p class="status" role="status" aria-live="polite">正在载入本地简历…</p>
         <section class="issues" aria-label="未完成字段" hidden></section>
         <section class="preview" hidden>
@@ -85,12 +90,12 @@
   const $ = (selector) => shadow.querySelector(selector);
   const ui = {
     launcher: $(".launcher"), panel: $(".panel"), resume: $(".resume"), edit: $(".edit"),
-    scan: $(".scan"), selected: $(".selected"), assist: $(".assist"), prepare: $(".prepare"), stop: $(".stop"), status: $(".status"), issues: $(".issues"),
+    scan: $(".scan"), local: $(".local"), control: $(".browser-control"), vision: $(".vision-fallback"), controlState: $(".control-state"), apiDetail: $(".api-detail"), selected: $(".selected"), assist: $(".assist"), prepare: $(".prepare"), stop: $(".stop"), status: $(".status"), issues: $(".issues"),
     preview: $(".preview"), summary: $(".summary"), items: $(".items"), ai: $(".ai"),
     overwrite: $(".overwrite"), confirm: $(".confirm"), facts: $(".facts"),
     factsList: $(".facts-list"), picker: $(".picker"),
   };
-  const state = { fields: [], items: [], busy: false, pickCleanup: null, cancelRequested: false };
+  const state = { fields: [], items: [], busy: false, pickCleanup: null, cancelRequested: false, aiConfigured: false };
 
   function setStatus(message, tone = "") {
     ui.status.textContent = message;
@@ -99,7 +104,7 @@
 
   function setBusy(value) {
     state.busy = value;
-    for (const control of [ui.resume, ui.edit, ui.scan, ui.selected, ui.assist, ui.prepare, ui.ai, ui.confirm]) {
+    for (const control of [ui.resume, ui.edit, ui.scan, ui.local, ui.selected, ui.assist, ui.prepare, ui.ai, ui.confirm]) {
       control.disabled = value;
     }
   }
@@ -126,9 +131,9 @@
   }
 
   function resumeCollectionCounts(facts) {
-    const records = { education: new Set(), work_experience: new Set(), projects: new Set(), certificate: new Set(), language_skills: new Set() };
+    const records = { education: new Set(), internships: new Set(), cadre_experiences: new Set(), work_experience: new Set(), projects: new Set(), certificate: new Set(), language_skills: new Set() };
     const targets = {
-      education: "education", work_experience: "work_experience",
+      education: "education", internships: "internships", cadre_experiences: "cadre_experiences", work_experience: "work_experience",
       projects: "projects", certificate: "certificate", language_skills: "language_skills",
     };
     for (const fact of Array.isArray(facts) ? facts : []) {
@@ -167,6 +172,24 @@
       option_disabled: "匹配选项不可用",
       value_mismatch: "页面没有接受填写结果",
       unknown_field: "页面字段已经变化",
+      detached_field: "页面已替换此输入框，请重新识别",
+      unavailable_field: "字段已隐藏、禁用或不再可编辑",
+      ambiguous_field: "存在多个相同字段，无法安全重新定位",
+      too_long: "资料超过网页允许的字数，需要精简",
+      browser_control_disabled: "尚未启用浏览器输入控制",
+      debugger_permission_required: "尚未授权浏览器输入控制",
+      debugger_unavailable: "浏览器调试连接不可用，可能被其他工具占用",
+      debugger_busy: "浏览器已由其他调试工具控制",
+      unsafe_target: "无法确认操作目标属于当前字段",
+      unsafe_action: "该操作超出当前字段的安全范围",
+      vision_unavailable: "配置的模型未能完成图片识别",
+      control_step_limit: "已达到自动尝试次数上限",
+      control_cancelled: "操作已停止",
+      control_verification_failed: "浏览器操作后，页面读回与资料不一致",
+      browser_control_failed: "浏览器输入执行失败",
+      unsupported_control: "该控件暂不支持浏览器输入",
+      target_out_of_view: "目标未能滚动到可操作位置",
+      control_busy: "当前页面已有正在进行的填写",
     };
     const manualReasons = new Set(["option_not_found", "custom_menu_needs_manual_open", "unsupported_custom_date_panel"]);
     const fields = new Map(state.fields.map((field) => [field.id, field]));
@@ -181,7 +204,7 @@
     for (const entry of pending) {
       const item = document.createElement("li");
       const label = fields.get(entry.fieldId)?.label || "未命名字段";
-      const reason = reasonLabels[entry.reason] || "页面未完成自动填写";
+      const reason = reasonLabels[entry.reason] || (/[\u4e00-\u9fff]/.test(entry.reason || "") ? String(entry.reason).slice(0, 180) : "页面未完成自动填写");
       const next = manualReasons.has(entry.reason)
         ? "手动打开下拉或日期后重试；仍失败可辅助填写复制资料自行选择"
         : "请重新识别后重试；仍失败可用辅助填写复制资料手动完成";
@@ -210,7 +233,9 @@
       input.dataset.index = String(index);
       const copy = document.createElement("span");
       const title = document.createElement("strong");
-      title.textContent = item.label || state.fields.find((field) => field.id === item.fieldId)?.label || "未命名字段";
+      const field = state.fields.find((field) => field.id === item.fieldId);
+      const context = field?.recordLabel || field?.section;
+      title.textContent = `${context ? `${context} · ` : ""}${item.label || field?.label || "未命名字段"}`;
       const value = document.createElement("span");
       value.textContent = item.displayValue ?? String(item.value ?? "");
       copy.append(title, value);
@@ -228,6 +253,8 @@
   }
 
   async function scan(root, options = {}) {
+    await refreshProfiles(true);
+    const previousItems = state.items;
     const result = await bridge().scan(root);
     const scannedFields = Array.isArray(result?.fields) ? result.fields : [];
     if (scannedFields.length > 250) throw new Error("识别到的字段超过 250 个，请使用选区填写缩小范围");
@@ -235,10 +262,28 @@
     const fields = options.remainingOnly ? scannedFields.filter(fieldIsEmpty) : scannedFields;
     state.fields = fields;
     const matched = await message({ type: "LOCAL_MATCH", fields, resumeId: ui.resume.value });
-    state.items = normalizedItems(matched.items);
+    const localItems = normalizedItems(matched.items);
+    const remainingIds = new Set(fields.map((field) => field.id));
+    const retained = options.preservePlan ? previousItems.filter((item) => remainingIds.has(item.fieldId)) : [];
+    state.items = [...retained, ...localItems.filter((item) => !retained.some((prior) => prior.fieldId === item.fieldId))];
     if (!options.preserveIssues) renderIssues([]);
     renderItems();
     setStatus(`识别到 ${fields.length} 个字段，本地匹配 ${state.items.length} 项。请检查后确认填写。`);
+    if (options.useAI) {
+      if (!state.aiConfigured) {
+        setStatus(`识别到 ${fields.length} 个字段，本地匹配 ${state.items.length} 项。尚未配置模型，请在工作台设置 API 后重试 AI。`);
+      } else {
+        setStatus(`正在用 AI 理解 ${fields.length} 个字段及其经历上下文…`);
+        try {
+          const result = await message({ type: "MATCH", fields, resumeId: ui.resume.value });
+          state.items = normalizedItems(result.items);
+          renderItems();
+          setStatus(`AI 匹配 ${state.items.length} / ${fields.length} 项。请核对每项内容及所属经历后确认填写。`);
+        } catch (error) {
+          setStatus(`AI 匹配未完成：${error.message}。已保留 ${state.items.length} 项本地匹配，可检查后填写或重试 AI。`, "error");
+        }
+      }
+    }
     return { fields: state.fields, items: state.items };
   }
 
@@ -262,7 +307,9 @@
     ui.stop.hidden = false;
     let result;
     try {
-      result = await bridge().apply(items.map(({ fieldId, value }) => ({ fieldId, value })), ui.overwrite.checked);
+      result = await bridge().apply(items.map(({ fieldId, value, sourcePath }) => ({ fieldId, value, ...(sourcePath ? { sourcePath } : {}) })), ui.overwrite.checked, {
+        resumeId: ui.resume.value, browserControl: ui.control.checked, visionFallback: ui.control.checked && ui.vision.checked,
+      });
     } finally {
       ui.stop.hidden = true;
     }
@@ -279,7 +326,7 @@
     if (cancelled) {
       setStatus("已停止当前操作。已经完成的填写会保留，其余项目未继续写入。", "error");
     } else {
-      setStatus(`填写结果：${detail || "没有返回结果"}。请在页面复核，助手不会自动提交。`, counts.failed ? "error" : "success");
+      setStatus(`填写结果：${detail || "没有返回结果"}。请在页面复核，助手不会自动提交。`, (counts.failed || counts.skipped) ? "error" : "success");
     }
     return { results: results || [], cancelled };
   }
@@ -331,7 +378,7 @@
       const root = event.target;
       finish();
       state.pickCleanup = null;
-      task(() => scan(root));
+      task(() => scan(root, { useAI: true }));
     };
     const key = (event) => {
       if (event.key !== "Escape") return;
@@ -415,7 +462,7 @@
         const result = await bridge().scan(target);
         const fields = Array.isArray(result?.fields) ? result.fields : [];
         if (fields.length !== 1) throw new Error(fields.length ? "请直接点击一个输入框" : "该位置不是可填写字段");
-        await apply([{ fieldId: fields[0].id, value: fact.value }]);
+        await apply([{ fieldId: fields[0].id, value: fact.value, sourcePath: fact.path }]);
       });
     };
     const key = (event) => { if (event.key === "Escape") { event.preventDefault(); finish(); state.pickCleanup = null; setStatus("已取消单项填写"); } };
@@ -423,14 +470,16 @@
     document.addEventListener("mousemove", move, true); document.addEventListener("click", choose, true); document.addEventListener("keydown", key, true);
   }
 
-  ui.launcher.onclick = () => { ui.panel.hidden = false; ui.launcher.hidden = true; };
+  ui.launcher.onclick = () => { ui.panel.hidden = false; ui.launcher.hidden = true; return task(() => refreshProfiles(true)); };
+  ui.control.onchange = () => { ui.vision.disabled = !ui.control.checked; if (!ui.control.checked) ui.vision.checked = false; };
   $(".minimize").onclick = () => { ui.panel.hidden = true; ui.launcher.hidden = false; };
   $(".close").onclick = () => { stopPicking(); ui.panel.hidden = true; ui.launcher.hidden = false; };
   ui.edit.onclick = (event) => {
     if (!event.isTrusted) return;
     return task(async () => { await message({ type: "OPEN_WORKBENCH" }); setStatus("已打开简历工作台"); });
   };
-  ui.scan.onclick = (event) => { if (event.isTrusted) return task(() => scan()); };
+  ui.scan.onclick = (event) => { if (event.isTrusted) return task(() => scan(undefined, { useAI: true })); };
+  ui.local.onclick = (event) => { if (event.isTrusted) return task(() => scan()); };
   ui.selected.onclick = (event) => { if (event.isTrusted && !state.busy) pickRegion(); };
   ui.assist.onclick = (event) => { if (event.isTrusted) return task(showFacts); };
   ui.prepare.onclick = (event) => {
@@ -443,7 +492,7 @@
       setStatus("正在按本地简历条数补齐已确认的经历分区…");
       try {
         const result = await workflow().prepare(counts);
-        const rescanned = await scan();
+        const rescanned = await scan(undefined, { useAI: true });
         const detail = result.remaining ? `，仍缺 ${result.remaining} 条；请手动新增或展开对应分区后重新识别` : "";
         setStatus(`已新增 ${result.added} 条经历并重新识别 ${rescanned.fields.length} 个字段${detail}。请检查预览。`, result.remaining ? "error" : "success");
       } finally {
@@ -458,6 +507,7 @@
     const bridgeApi = globalThis.__personalResumeBridge;
     if (typeof workflowApi?.cancel === "function") cancelled = workflowApi.cancel() || cancelled;
     if (typeof bridgeApi?.cancel === "function") cancelled = bridgeApi.cancel() || cancelled;
+    message({ type: "CONTROL_CANCEL" }).catch(() => {});
     if (cancelled) {
       state.cancelRequested = true;
       setStatus("正在停止当前操作；已经完成的填写会保留，其余项目将跳过…");
@@ -481,9 +531,9 @@
       .map((input) => state.items[Number(input.dataset.index)])
       .filter(Boolean);
     const result = await apply(selected);
-    const rescanned = await scan(undefined, { remainingOnly: true, preserveIssues: true });
+    const rescanned = await scan(undefined, { remainingOnly: true, preserveIssues: true, preservePlan: true });
     if (result.cancelled) {
-      setStatus(`已停止当前操作。已经完成的填写会保留；已重新识别，剩余 ${rescanned.items.length} 项可填写。`, "error");
+      setStatus(`已停止当前操作。已经完成的填写会保留；已重新识别，仍有 ${rescanned.fields.length} 个空字段，其中 ${rescanned.items.length} 项已匹配。`, "error");
       return;
     }
     const labels = { applied: "成功", skipped: "跳过", failed: "失败", protected: "保护已有值" };
@@ -493,8 +543,8 @@
       counts[key] = (counts[key] || 0) + 1;
     }
     const detail = Object.entries(counts).map(([key, count]) => `${labels[key] || key} ${count} 项`).join("，");
-    const help = counts.skipped || counts.failed ? " 下拉无法打开或选项未找到时，请手动打开控件，再用辅助填写或重新识别。" : "";
-    setStatus(`填写结果：${detail || "没有返回结果"}。已重新识别，剩余 ${rescanned.items.length} 项可填写；请在页面复核。${help}`, counts.failed ? "error" : "success");
+    const help = counts.skipped || counts.failed ? " 请查看未完成字段的具体原因；可重新匹配或使用辅助填写。" : "";
+    setStatus(`填写结果：${detail || "没有返回结果"}。已重新识别，仍有 ${rescanned.fields.length} 个空字段，其中 ${rescanned.items.length} 项已匹配；请在页面复核。${help}`, (counts.failed || counts.skipped) ? "error" : "success");
     });
   };
   ui.resume.onchange = (event) => {
@@ -503,17 +553,10 @@
     setStatus("简历已切换，请重新识别当前页面");
   };
 
-  globalThis[API_KEY] = {
-    reopen() {
-      stopPicking();
-      ui.panel.hidden = false;
-      ui.launcher.hidden = true;
-    },
-  };
-
-  task(async () => {
+  async function refreshProfiles(preserveSelection = true) {
     const result = await message({ type: "PANEL_STATE" });
     const resumes = Array.isArray(result.resumes) ? result.resumes : [];
+    const previous = preserveSelection ? ui.resume.value : "";
     ui.resume.replaceChildren();
     for (const resume of resumes) {
       const option = document.createElement("option");
@@ -521,8 +564,36 @@
       option.textContent = resume.name || "未命名简历";
       ui.resume.append(option);
     }
-    if (result.activeId) ui.resume.value = result.activeId;
+    ui.resume.value = resumes.some((resume) => resume.id === previous) ? previous : result.activeId || resumes[0]?.id || "";
+    if (previous && previous !== ui.resume.value) { state.fields = []; state.items = []; ui.preview.hidden = true; }
+    state.aiConfigured = result.aiConfigured === true;
+    ui.apiDetail.textContent = `AI 匹配会发送字段说明、经历上下文及所选简历资料至 ${result.apiHost || "配置的 API"}；请先检查预览。`;
+    const enabled = result.control?.enabled === true;
+    if (ui.control.disabled || !preserveSelection) ui.control.checked = enabled;
+    ui.control.disabled = !enabled;
+    ui.vision.disabled = !enabled || !ui.control.checked;
+    if (!enabled) { ui.control.checked = false; ui.vision.checked = false; }
+    ui.controlState.textContent = enabled ? "已启用浏览器输入；仅当前确认填写的字段在 DOM 失败后使用。" : "可在扩展图标的“浏览器控制与视觉兜底”中启用；扩展安装时声明调试权限。";
     if (!resumes.length) throw new Error("尚无简历，请先打开工作台创建简历");
-    setStatus("已就绪。识别结果会先预览，确认后才写入页面。", "success");
+  }
+
+  let suspended = null;
+  globalThis[API_KEY] = {
+    reopen() {
+      stopPicking();
+      ui.panel.hidden = false;
+      ui.launcher.hidden = true;
+      return task(() => refreshProfiles(true));
+    },
+    suspend() { if (suspended === null) suspended = !ui.panel.hidden; ui.panel.hidden = true; ui.launcher.hidden = true; },
+    resume() { if (suspended === null) return; ui.panel.hidden = !suspended; ui.launcher.hidden = suspended; suspended = null; },
+  };
+  chrome.runtime.onMessage?.addListener?.((payload, sender) => {
+    if (sender?.id !== chrome.runtime.id || payload?.type !== "CONTROL_END") return;
+    globalThis[API_KEY].resume();
+  });
+  task(async () => {
+    await refreshProfiles(false);
+    setStatus("已就绪。AI 理解后先预览，确认后才写入页面。", "success");
   });
 })();

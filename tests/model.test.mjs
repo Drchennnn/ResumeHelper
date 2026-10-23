@@ -80,6 +80,44 @@ test('local aliases cover common recruiting labels without weakening repeated-ro
   focus:'education.0.research_focus',city:'job_intention.preferred_city'
  });
 });
+test('prompt-like labels and placeholders match aliases while record identity overrides page order',()=>{
+ const r=normalizeResume({education:[
+  {school:'本科大学',department:'本科书院',major:'电子工程'},
+  {school:'硕士大学',department:'计算机学院',major:'人工智能'}
+ ]});
+ const fields=[
+  {id:'department',label:'请填写学院名称',section:'教育经历',fieldKey:'department',groupIndex:0,groupCount:2,recordLabel:'硕士大学'},
+  {id:'major',label:'',placeholder:'请输入专业名称',section:'教育经历',fieldKey:'major',groupIndex:0,groupCount:2,recordLabel:'硕士大学'}
+ ];
+ assert.deepEqual(localPlan(fields,r).map(item=>[item.fieldId,item.sourcePath,item.value]),[
+  ['department','education.1.department','计算机学院'],['major','education.1.major','人工智能']
+ ]);
+});
+test('unknown or ambiguous record labels cannot be mapped by array order or an AI sourcePath',()=>{
+ const r=normalizeResume({education:[{school:'甲大学',major:'甲专业'},{school:'乙大学',major:'乙专业'}]});
+ const field={id:'major',label:'专业名称',section:'education',fieldKey:'major',groupIndex:0,recordLabel:'页面未说明学校'};
+ assert.equal(localPlan([field],r).length,0);
+ assert.equal(resolvePlan({mappings:[{fieldId:'major',sourcePath:'education.0.major'}]},[field],r).length,0);
+ const duplicate={...field,recordLabel:'大学'};
+ assert.equal(resolvePlan({mappings:[{fieldId:'major',sourcePath:'education.0.major'}]},[duplicate],r).length,0);
+});
+test('existing page record identities reserve their source rows before blank records are assigned',()=>{
+ const r=normalizeResume({education:[
+  {school:'香港城市大学',department:'计算机科学系',major:'人工智能'},
+  {school:'北京邮电大学',department:'信息工程学院',major:'通信工程'}
+ ]});
+ const fields=[
+  {id:'existing-school',label:'学校名称',section:'教育经历',fieldKey:'school',groupIndex:0,groupCount:2,recordLabel:'北京邮电大学'},
+  {id:'blank-department',label:'请填写学院名称',section:'教育经历',fieldKey:'department',groupIndex:1,groupCount:2,recordLabel:'教育经历 2'},
+  {id:'blank-major',label:'请输入专业名称',section:'教育经历',fieldKey:'major',groupIndex:1,groupCount:2,recordLabel:'教育经历 2'}
+ ];
+ const plan=Object.fromEntries(localPlan(fields,r).map(item=>[item.fieldId,item.sourcePath]));
+ assert.equal(plan['existing-school'],'education.1.school');
+ assert.equal(plan['blank-department'],'education.0.department');
+ assert.equal(plan['blank-major'],'education.0.major');
+ assert.equal(resolvePlan({mappings:[{fieldId:'blank-major',sourcePath:'education.1.major'}]},fields,r).length,0);
+ assert.equal(resolvePlan({mappings:[{fieldId:'blank-major',sourcePath:'education.0.major'}]},fields,r)[0].value,'人工智能');
+});
 test('a unique singleton label can match without metadata while unrelated cross-section metadata is rejected',()=>{
  const r=normalizeResume({job_intention:{preferred_city:'深圳'},education:[{school:'示例大学'}],work_experience:[{company:'示例公司'}]});
  const singleton=localPlan([{id:'city',label:'期望工作地点',type:'combobox'}],r);
@@ -101,6 +139,6 @@ test('site dropdown metadata supplies real choices while custom degree category 
 test('0.1 keys migrate to canonical site paths without losing booleans or issuer text',()=>{const r=normalizeResume({resumeName:'旧简历',personal:{city:'香港',website:'https://example.test',summary:'介绍',graduate_status:false},intent:{role:'算法工程师',city:'深圳'},experience:[{company:'示例公司',role:'工程师',details:'开发'}],certificates:[{name:'示例证书',issuer:'示例机构',date:'2024-01'}],languages:[{name:'英语',level:'熟练'}],social_practice:[{organization:'志愿队'}]});assert.equal(r.name,'旧简历');assert.equal(r.personal.address,'香港');assert.equal(r.personal.graduate_status,false);assert.equal(normalizeResume({personal:{graduate_status:'false'}}).personal.graduate_status,false);assert.equal(r.job_intention.target_position,'算法工程师');assert.equal(r.work_experience[0].position,'工程师');assert.equal(r.certificate[0].certificate_name,'示例证书');assert.match(r.extras,/证书颁发机构：示例机构/);assert.equal(r.language_skills[0].proficiency_level,'熟练');assert.equal(r.social_practices[0].organization,'志愿队');assert.equal(flattenResume(r).find(f=>f.path==='personal.graduate_status').value,'否');});
 test('completion stats count singleton fields and instantiated collection rows',()=>{const r=normalizeResume({personal:{name:'林测试',graduate_status:false},education:[{school:'示例大学',degree:'硕士'}]});const stats=completionStats(r);assert.equal(stats.bySection.personal.total,61);assert.equal(stats.bySection.personal.filled,2);assert.equal(stats.bySection.education.total,40);assert.equal(stats.bySection.education.filled,2);assert.equal(stats.bySection.internships.total,0);assert.equal(stats.filled,4);assert.equal(stats.total,118);assert.equal(stats.missing,114);assert.equal(stats.percent,3);});
 test('endpoint rejects insecure remote hosts and credentials; supports full endpoint',()=>{assert.equal(endpoint({baseUrl:'https://example.com/v1/'}),'https://example.com/v1/chat/completions');assert.equal(endpoint({baseUrl:'http://localhost:9999/v1/chat/completions'}),'http://localhost:9999/v1/chat/completions');for(const baseUrl of ['http://evil.example/v1','https://key:secret@example.com','https://example.com?key=secret','file:///etc/passwd'])assert.throws(()=>endpoint({baseUrl}));assert.deepEqual(parseJSON('```json\n{"ok":true}\n```'),{ok:true});assert.throws(()=>parseJSON('not JSON'));});
-test('custom API request, matching, resume parsing and error handling against real local HTTP server',async()=>{let last;let mode='match';const server=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;last={path:req.url,headers:req.headers,body:JSON.parse(body)};if(mode==='error'){res.writeHead(401).end('secret-token-should-not-echo');return;}const content=mode==='parse'?{personal:{name:'林测试'},education:[{school:'示例大学'}]}:{mappings:[{fieldId:'a',sourcePath:'personal.name'}]};res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(content)}}]}));});await new Promise(r=>server.listen(0,'127.0.0.1',r));try{const settings={baseUrl:`http://127.0.0.1:${server.address().port}/v1`,model:'test-model',apiKey:'test-key'};const items=await matchFields([{id:'a',label:'姓名',value:'existing-private',section:'personal',groupIndex:0,fieldKey:'name',type:'text'}],normalizeResume({personal:{name:'林测试'}}),settings);assert.equal(items[0].value,'林测试');assert.equal(last.path,'/v1/chat/completions');assert.equal(last.headers.authorization,'Bearer test-key');assert.equal(last.body.model,'test-model');const matchPayload=JSON.parse(last.body.messages[1].content);assert.deepEqual(matchPayload.fields[0],{id:'a',label:'姓名',type:'text',section:'personal',groupIndex:0,fieldKey:'name'});assert.ok(!last.body.messages[1].content.includes('existing-private'));mode='parse';const resume=await parseResumeText('姓名：林测试',settings);assert.equal(resume.education[0].school,'示例大学');mode='error';await assert.rejects(requestJSON(settings,'test',{}),e=>e.message==='API 请求失败（HTTP 401）');}finally{await new Promise(r=>server.close(r));}});
+test('custom API request, matching, resume parsing and error handling against real local HTTP server',async()=>{let last;let mode='match';const server=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;last={path:req.url,headers:req.headers,body:JSON.parse(body)};if(mode==='error'){res.writeHead(401).end('secret-token-should-not-echo');return;}const content=mode==='parse'?{personal:{name:'林测试'},education:[{school:'示例大学'}]}:{mappings:[{fieldId:'a',sourcePath:'personal.name'}]};res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(content)}}]}));});await new Promise(r=>server.listen(0,'127.0.0.1',r));try{const settings={baseUrl:`http://127.0.0.1:${server.address().port}/v1`,model:'test-model',apiKey:'test-key'};const items=await matchFields([{id:'a',label:'姓名',placeholder:'请输入姓名',helpText:'与证件一致',context:'基本信息 > 申请人',recordLabel:'基本资料',value:'existing-private',section:'personal',groupIndex:0,groupCount:1,fieldKey:'name',type:'text'}],normalizeResume({personal:{name:'林测试'}}),settings);assert.equal(items[0].value,'林测试');assert.equal(last.path,'/v1/chat/completions');assert.equal(last.headers.authorization,'Bearer test-key');assert.equal(last.body.model,'test-model');const matchPayload=JSON.parse(last.body.messages[1].content);assert.deepEqual(matchPayload.fields[0],{id:'a',label:'姓名',placeholder:'请输入姓名',helpText:'与证件一致',context:'基本信息 > 申请人',recordLabel:'基本资料',type:'text',section:'personal',groupIndex:0,groupCount:1,fieldKey:'name'});assert.ok(!last.body.messages[1].content.includes('existing-private'));mode='parse';const resume=await parseResumeText('姓名：林测试',settings);assert.equal(resume.education[0].school,'示例大学');mode='error';await assert.rejects(requestJSON(settings,'test',{}),e=>e.message==='API 请求失败（HTTP 401）');}finally{await new Promise(r=>server.close(r));}});
 test('new local workbench creates stable persistent identity and preserves settings while saving resumes',async()=>{const data=new Map();globalThis.localStorage={getItem:k=>data.get(k)||null,setItem:(k,v)=>data.set(k,v)};const {loadState,saveResumes,saveSettings}=await import('../extension/lib/storage.js');const first=await loadState();assert.equal((await loadState()).activeId,first.activeId);await saveSettings({baseUrl:'http://localhost:8888/v1',model:'mock',apiKey:'test'});first.resumes[0].personal.name='测试';await saveResumes(first.resumes,first.activeId);assert.equal((await loadState()).settings.model,'mock');assert.equal((await loadState()).resumes[0].personal.name,'测试');delete globalThis.localStorage;});
 test('concurrent profile and API setting saves never overwrite the other domain',async()=>{const data=new Map();globalThis.localStorage={getItem:k=>data.get(k)||null,setItem:(k,v)=>data.set(k,v)};const {loadState,saveResumes,saveSettings}=await import('../extension/lib/storage.js');const first=await loadState();first.resumes[0].personal.name='并发保存';await Promise.all([saveResumes(first.resumes,first.activeId),saveSettings({baseUrl:'https://example.com/v1',model:'concurrent-model',apiKey:'test'})]);const s=await loadState();assert.equal(s.resumes[0].personal.name,'并发保存');assert.equal(s.settings.model,'concurrent-model');delete globalThis.localStorage;});

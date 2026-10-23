@@ -38,6 +38,7 @@ class FakeElement {
     this.labels = attributes.labels || [];
     this.events = [];
     this.style = attributes.style || {};
+    this.rect = attributes.rect || { x: 10, y: 20, width: 120, height: 32 };
     this.parent = attributes.parent || null;
     this.parentElement = attributes.parent || null;
     this.className = attributes.className || "";
@@ -71,6 +72,10 @@ class FakeElement {
 
   getClientRects() {
     return this.style.display === "none" ? [] : [{}];
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
   }
 
   closest(selector) {
@@ -183,6 +188,8 @@ function createHarness() {
     }),
     setTimeout,
     clearTimeout,
+    innerWidth: 1200,
+    innerHeight: 800,
   });
   vm.runInContext(contentSource, context);
 
@@ -626,4 +633,200 @@ test('UD month range picker navigates by year, clicks the requested month, and r
  assert.equal(start.value,'2024-09');
  assert.equal(left.events.filter(type=>type==='click').length,2);
  assert.ok(months[8].events.includes('click'));
+});
+
+test('JD-style CSS modules expose semantic label, section, record context and help text',()=>{
+ const {document,send}=createHarness();
+ const title={textContent:'教育经历'};
+ const grid=new FakeContainer('section',{className:'gridContainer___hash'});
+ grid.closest=selector=>selector.includes('gridContainer')?grid:null;
+ grid.querySelector=selector=>selector.includes('title')?title:null;
+ const collection=new FakeContainer('div');
+ const recordsParent={closest:()=>collection};
+ const firstRecord=new FakeContainer('div',{className:'formGroupItem___a'});
+ const secondRecord=new FakeContainer('div',{className:'formGroupItem___b'});
+ firstRecord.parentElement=recordsParent;secondRecord.parentElement=recordsParent;
+ collection.querySelectorAll=selector=>selector.includes('formGroupItem')?[firstRecord,secondRecord]:[];
+ const school=new FakeElement('input',{value:'香港城市大学','aria-label':'学校名称'});
+ const major=new FakeElement('input',{placeholder:'请输入',rect:{x:30,y:80,width:260,height:40}});
+ const fieldItem=new FakeContainer('div',{className:'fieldItem___hash'});
+ fieldItem.parentElement=grid;
+ fieldItem.querySelector=selector=>{
+  if(selector.includes('filedName'))return{textContent:'专业名称'};
+  if(selector.includes('help')||selector.includes('tip'))return{textContent:'请填写毕业证上的专业全称'};
+  return null;
+ };
+ secondRecord.querySelector=()=>null;
+ secondRecord.querySelectorAll=selector=>selector.includes('input')?[school,major]:[];
+ const baseClosest=major.closest.bind(major);
+ major.closest=selector=>{
+  if(selector.includes('fieldItem'))return fieldItem;
+  if(selector.includes('formGroupItem'))return secondRecord;
+  return baseClosest(selector);
+ };
+ document.children.push(major);
+ const field=send({type:'SCAN'}).fields[0];
+ assert.equal(field.label,'专业名称');
+ assert.equal(field.section,'教育经历');
+ assert.equal(field.recordLabel,'香港城市大学');
+ assert.equal(field.groupIndex,1);assert.equal(field.groupCount,2);
+ assert.equal(field.helpText,'请填写毕业证上的专业全称');
+ assert.match(field.context,/教育经历 \/ 香港城市大学 \/ 专业名称/);
+ assert.deepEqual(plain(field.rect),{x:30,y:80,width:260,height:40});
+ assert.equal(field.value,'','placeholder must not be treated as an existing value');
+});
+
+test('radio controls use their group title instead of exposing only the choice label',()=>{
+ const {document,send}=createHarness();
+ const container=new FakeContainer('div',{className:'fieldItem___gender'});
+ container.querySelector=selector=>selector.includes('filedName')?{textContent:'性别'}:null;
+ const male=new FakeElement('input',{type:'radio',value:'male',labels:[label('男')]});
+ const baseClosest=male.closest.bind(male);
+ male.closest=selector=>selector.includes('fieldItem')?container:baseClosest(selector);
+ document.children.push(male);
+ const field=send({type:'SCAN'}).fields[0];
+ assert.equal(field.label,'性别：男');
+ assert.deepEqual(plain(field.options),[{value:'male',label:'男'}]);
+});
+
+test('APPLY strictly relocates a rerendered field by label, section and group anchors',async()=>{
+ const {document,send}=createHarness();
+ const oldField=new FakeElement('input',{'aria-label':'学院名称'});
+ document.children.push(oldField);
+ const fieldId=send({type:'SCAN'}).fields[0].id;
+ oldField.isConnected=false;
+ const replacement=new FakeElement('input',{'aria-label':'学院名称'});
+ document.children=[replacement];
+ const response=await send({type:'APPLY',items:[{fieldId,value:'计算机学院'}]});
+ assert.equal(response.results[0].status,'applied',JSON.stringify(response));
+ assert.equal(replacement.value,'计算机学院');
+ assert.equal(oldField.value,'');
+});
+
+test('CONTROL bridge returns bounded targets and candidates, guards coordinates and verifies readback',()=>{
+ const {document,send}=createHarness();
+ const menu=new FakeContainer('div',{id:'degree-menu',rect:{x:10,y:60,width:180,height:120}});menu.id='degree-menu';
+ const option=new FakeElement('div',{role:'option',textContent:'硕士',rect:{x:20,y:70,width:140,height:30}});
+ menu.children.push(option);document.byId.set(menu.id,menu);
+ const combo=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-controls':menu.id,'aria-label':'学历',
+  rect:{x:10,y:20,width:180,height:32},
+ });
+ document.children.push(combo,menu);
+ const field=send({type:'SCAN'}).fields[0];
+ const target=send({type:'CONTROL_TARGET',fieldId:field.id});
+ assert.equal(target.ok,true);assert.equal(target.nonempty,false);
+ assert.deepEqual(plain(target.rect),{x:10,y:20,width:180,height:32});
+ const candidates=send({type:'CONTROL_OPTIONS',fieldId:field.id});
+ assert.equal(candidates.options.length,1);
+ const candidate=candidates.options[0];
+ assert.equal(send({type:'CONTROL_GUARD',fieldId:field.id,candidateId:candidate.id,x:30,y:80}).allowed,true);
+ assert.equal(send({type:'CONTROL_GUARD',fieldId:field.id,x:900,y:900}).allowed,false);
+ assert.equal(send({type:'CONTROL_VERIFY',fieldId:field.id,value:'硕士'}).verified,false);
+ combo.value='硕士';
+ assert.equal(send({type:'CONTROL_VERIFY',fieldId:field.id,value:'硕士'}).verified,true);
+});
+
+test('CONTROL date candidates stay inside their bound picker and dangerous actions remain blocked',()=>{
+ const {document,send}=createHarness();
+ const panel=new FakeContainer('div',{id:'month-panel',role:'grid',rect:{x:20,y:60,width:260,height:220}});panel.id='month-panel';
+ const previous=new FakeElement('button',{'aria-label':'上一年',rect:{x:30,y:70,width:30,height:30}});
+ const september=new FakeElement('button',{textContent:'9月',rect:{x:80,y:120,width:42,height:32}});
+ const save=new FakeElement('button',{textContent:'保存',rect:{x:160,y:240,width:60,height:32}});
+ panel.children.push(previous,september,save);document.byId.set(panel.id,panel);
+ const date=new FakeElement('input',{
+  role:'combobox','aria-haspopup':'dialog','aria-controls':panel.id,'aria-label':'毕业时间',
+  readonly:'',readOnly:true,rect:{x:20,y:20,width:220,height:32},
+ });
+ document.children.push(date,panel);
+ const field=send({type:'SCAN'}).fields[0];
+ assert.equal(field.type,'date-picker');
+ const state=send({type:'CONTROL_OPTIONS',fieldId:field.id});
+ assert.deepEqual(plain(state.options.map(option=>option.label)),['上一年','9月']);
+ const month=state.options.find(option=>option.label==='9月');
+ assert.equal(send({type:'CONTROL_GUARD',fieldId:field.id,candidateId:month.id,x:90,y:130}).allowed,true);
+ assert.equal(send({type:'CONTROL_GUARD',fieldId:field.id,x:180,y:250}).allowed,false);
+
+ const dangerous=new FakeElement('input',{'aria-label':'保存',rect:{x:400,y:20,width:120,height:32}});
+ document.children=[dangerous];
+ const dangerousField=send({type:'SCAN'}).fields[0];
+ const target=send({type:'CONTROL_TARGET',fieldId:dangerousField.id});
+ assert.equal(target.blocked,true);assert.equal(target.reason,'unsafe_control');
+});
+
+test('control target suspends the panel and cancellation restores it',()=>{
+ const {context,document,send}=createHarness();
+ let suspended=0,resumed=0;
+ context.__personalResumeFloatingPanel={suspend(){suspended+=1;},resume(){resumed+=1;}};
+ const field=new FakeElement('input',{'aria-label':'专业名称'});document.children.push(field);
+ const id=send({type:'SCAN'}).fields[0].id;
+ assert.equal(send({type:'CONTROL_TARGET',fieldId:id}).ok,true);
+ assert.equal(suspended,1);
+ send({type:'CANCEL'});
+ assert.equal(resumed,1);
+});
+
+test('browser-control fallback sends only field identity and trusted source path',async()=>{
+ const {context,document,send}=createHarness();
+ const field=new FakeElement('input',{'aria-label':'学院名称'});
+ field.dispatchEvent=function(event){this.events.push(event.type);this.value='';return true;};
+ document.children.push(field);
+ const descriptor=send({type:'SCAN'}).fields[0];
+ let payload;
+ context.chrome.runtime.sendMessage=async message=>{
+  payload=plain(message);field.value='计算机学院';return{status:'applied',method:'vision'};
+ };
+ const response=await send({
+  type:'APPLY',overwrite:false,
+  options:{browserControl:true,visionFallback:true,resumeId:'resume-1'},
+  items:[{fieldId:descriptor.id,value:'计算机学院',sourcePath:'education.0.department'}],
+ });
+ assert.equal(response.results[0].status,'applied');
+ assert.equal(response.results[0].method,'vision');
+ assert.equal(payload.type,'CONTROL_FILL');
+ assert.equal(payload.sourcePath,'education.0.department');
+ assert.equal(payload.resumeId,'resume-1');
+ assert.equal(payload.vision,true);
+ assert.equal(Object.hasOwn(payload,'value'),false);
+});
+
+test('CONTROL guard rejects a candidate coordinate obscured by another element',()=>{
+ const {document,send}=createHarness();
+ const menu=new FakeContainer('div',{id:'menu'});menu.id='menu';
+ const option=new FakeElement('div',{role:'option',textContent:'硕士',rect:{x:20,y:70,width:140,height:30}});
+ menu.children.push(option);document.byId.set(menu.id,menu);
+ const combo=new FakeElement('input',{role:'combobox','aria-controls':menu.id,'aria-label':'学历'});
+ document.children.push(combo,menu);
+ const field=send({type:'SCAN'}).fields[0];
+ const candidate=send({type:'CONTROL_OPTIONS',fieldId:field.id}).options[0];
+ document.elementFromPoint=()=>new FakeElement('div',{textContent:'遮挡层'});
+ assert.equal(send({type:'CONTROL_GUARD',fieldId:field.id,candidateId:candidate.id,x:30,y:80}).allowed,false);
+ document.elementFromPoint=()=>option;
+ assert.equal(send({type:'CONTROL_GUARD',fieldId:field.id,candidateId:candidate.id,x:30,y:80}).allowed,true);
+});
+
+test('browser-control fallback requires an explicit applied status and never bypasses validation',async()=>{
+ const {context,document,send}=createHarness();
+ const tooLong=new FakeElement('input',{'aria-label':'姓名',maxLength:2});
+ const disabled=new FakeElement('select',{
+  labels:[label('学历')],options:[{value:'master',textContent:'硕士',disabled:true}],
+ });
+ const mismatch=new FakeElement('input',{'aria-label':'普通字段'});
+ mismatch.dispatchEvent=function(event){this.events.push(event.type);this.value='';return true;};
+ document.children.push(tooLong,disabled,mismatch);
+ const fields=send({type:'SCAN'}).fields;
+ const calls=[];
+ context.chrome.runtime.sendMessage=async message=>{calls.push(plain(message));return{ok:true};};
+ const response=await send({
+  type:'APPLY',options:{browserControl:true,resumeId:'resume-1'},
+  items:[
+   {fieldId:fields[0].id,value:'过长姓名',sourcePath:'personal.name'},
+   {fieldId:fields[1].id,value:'master',sourcePath:'education.0.degree'},
+   {fieldId:fields[2].id,value:'目标',sourcePath:'personal.name'},
+  ],
+ });
+ assert.deepEqual(plain(response.results.map(result=>[result.status,result.reason])),[
+  ['skipped','too_long'],['skipped','option_disabled'],['failed','value_mismatch'],
+ ]);
+ assert.equal(calls.length,1,'only a retryable DOM mismatch may request fallback');
 });

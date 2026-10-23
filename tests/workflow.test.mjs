@@ -36,7 +36,7 @@ class FakeElement {
       for (const child of node.children) {
         if (selector === "button" && child.tagName === "BUTTON") found.push(child);
         if (selector === "details" && child.tagName === "DETAILS") found.push(child);
-        if (selector.includes("apply-form-array-card-content") && String(child.className || "").includes("apply-form-array-card-content")) found.push(child);
+        if (selector.includes("apply-form-array-card-content") && (String(child.className || "").includes("apply-form-array-card-content") || String(child.className || "").includes("formGroupItem"))) found.push(child);
         visit(child);
       }
     };
@@ -54,14 +54,14 @@ function button(text, type = "button", onclick = () => {}) {
   return item;
 }
 
-function harness(sectionEntries = [], explicitEntries = []) {
+function harness(sectionEntries = [], explicitEntries = [], hostname = "") {
   const roots = new Map(sectionEntries);
   const explicit = new Map(explicitEntries);
   const document = {
     getElementById(id) { return roots.get(id) || null; },
     querySelector(selector) { return explicit.get(selector) || null; },
   };
-  const context = vm.createContext({ document, setTimeout, clearTimeout, Date, getComputedStyle: () => ({ display: "block", visibility: "visible" }) });
+  const context = vm.createContext({ document, location: {hostname}, setTimeout, clearTimeout, Date, getComputedStyle: () => ({ display: "block", visibility: "visible" }) });
   vm.runInContext(source, context);
   return { api: context.__personalResumeWorkflow, roots };
 }
@@ -149,4 +149,25 @@ test("prepare can be cancelled while waiting for a page that did not create a re
 
 test("popup injects content, workflow, then floating scripts in dependency order", () => {
   assert.match(popupSource, /files:\['content\.js','workflow\.js','floating\.js'\]/);
+});
+
+
+test("JD repeatable sections require both the site and confirmed title before adding", async () => {
+  const root = new FakeElement("section");
+  root.className = "gridContainer___test";
+  const heading = new FakeElement("h2", "教育经历（必填）");
+  root.querySelector = selector => selector.includes("titleContainer") ? heading : null;
+  const makeRow = () => { const row = new FakeElement("div"); row.className = "formGroupItem___test"; return row; };
+  root.append(makeRow());
+  const add = button("+ 添加", "button", () => root.append(makeRow()));
+  root.append(add);
+  const {api} = harness([["edu", root]], [], "campus.jd.com");
+  const result = await api.prepare({education: 2});
+  assert.equal(result.added, 1);
+  assert.equal(add.clicks, 1);
+  const other = harness([["edu", root]], [], "other.example");
+  assert.equal((await other.api.prepare({education: 3})).added, 0);
+  heading.textContent = "提交申请";
+  assert.equal((await api.prepare({education: 3})).added, 0);
+  assert.equal(add.clicks, 1);
 });

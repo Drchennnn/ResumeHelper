@@ -13,6 +13,12 @@ const fieldAliases={
 };
 const clean=value=>typeof value==='string'?value.slice(0,20000):typeof value==='number'&&Number.isFinite(value)?String(value):typeof value==='boolean'?value:'';
 const hasValue=value=>value===true||value===false||(typeof value==='number'&&Number.isFinite(value))||(typeof value==='string'&&value.trim()!=='');
+const recordIdentityKeys={
+ education:['school'],internships:['company'],projects:['name'],cadre_experiences:['organization'],
+ work_experience:['company'],social_practices:['organization'],certificate:['certificate_name'],
+ language_skills:['language_type','certificate_name'],family_relations:['name'],awards:['name'],
+ patents:['title'],publications:['title'],training:['name','organization']
+};
 
 function inputSection(input,section){return input[section.key]!==undefined?input[section.key]:input[sectionAliases[section.key]];}
 function normalizeRow(section,value){
@@ -54,7 +60,9 @@ export function flattenResume(resume){
   const rows=section.repeatable?(Array.isArray(resume?.[section.key])?resume[section.key]:[]):[resume?.[section.key]||{}];
   rows.forEach((row,index)=>section.fields.forEach(field=>{
    if(!hasValue(row?.[field.key]))return;
-   out.push({path:`${section.key}.${section.repeatable?`${index}.`:''}${field.key}`,label:`${section.title}${section.repeatable?` ${index+1}`:''} / ${field.label}`,value:displayValue(row[field.key])});
+   const identityKey=section.repeatable?(recordIdentityKeys[section.key]||[]).find(key=>hasValue(row?.[key])):undefined;
+   out.push({path:`${section.key}.${section.repeatable?`${index}.`:''}${field.key}`,label:`${section.title}${section.repeatable?` ${index+1}`:''} / ${field.label}`,value:displayValue(row[field.key]),
+    ...(identityKey?{recordLabel:displayValue(row[identityKey]),recordKey:identityKey}:{})});
   }));
  }
  if(hasValue(resume?.extras))out.push({path:'extras',label:'补充资料',value:String(resume.extras)});
@@ -73,11 +81,11 @@ export function completionStats(resume){
 }
 
 export function resolvePlan(raw,fields,resume){
- const factList=flattenResume(resume),facts=new Map(factList.map(fact=>[fact.path,fact])),ids=new Map(fields.map(field=>[field.id,field])),seen=new Set(),items=[];
+ const factList=flattenResume(resume),facts=new Map(factList.map(fact=>[fact.path,fact])),ids=new Map(fields.map(field=>[field.id,field])),assignments=recordAssignments(fields,factList),seen=new Set(),items=[];
  for(const mapping of Array.isArray(raw?.mappings)?raw.mappings:[]){
   if(!mapping||seen.has(mapping.fieldId)||!ids.has(mapping.fieldId)||!facts.has(mapping.sourcePath))continue;
   const fact=facts.get(mapping.sourcePath),field=ids.get(mapping.fieldId);let value=fact.value;
-  const metadata=metadataCandidates(field,factList);
+  const metadata=metadataCandidates(field,factList,assignments);
   if(metadata!==null&&!metadata.some(candidate=>candidate.path===fact.path))continue;
   if(fact.path==='extras'&&normalizedLabel(field.label)!=='补充说明')continue;
   const options=Array.isArray(field.options)?field.options:[],nativeSelect=['select-one','select-multiple'].includes(field.type);
@@ -98,7 +106,7 @@ const manualAliases={
  'personal.phone':['手机','联系电话','电话','phone','mobile'],
  'education.school':['学校','学校名称','院校','院校名称','毕业学校','school','university'],
  'education.major':['专业','专业名称','major'],'education.degree':['学历','学历层次','教育程度','degree'],
- 'education.department':['学院','院系','院系名称','department'],'education.advisor_name':['导师','导师姓名','advisor'],
+ 'education.department':['学院','学院名称','院系','院系名称','department'],'education.advisor_name':['导师','导师姓名','advisor'],
  'education.research_focus':['研究方向','领域方向','研究领域','research focus'],
  'education.start_date':['入学时间','入学日期','开始时间','开始日期','起始时间'],
  'education.end_date':['毕业时间','毕业日期','结束时间','结束日期'],
@@ -117,7 +125,7 @@ for(const sectionKey of ['internships','projects','cadre_experiences','work_expe
 const schemaAliases={};
 for(const section of SECTIONS)for(const field of section.fields)schemaAliases[`${section.key}.${field.key}`]=[field.label.toLowerCase()];
 const aliases={...schemaAliases,...Object.fromEntries(Object.entries(manualAliases).map(([key,values])=>[key,[...(schemaAliases[key]||[]),...values.map(value=>value.toLowerCase())]]))};
-const normalizedLabel=value=>String(value||'').toLowerCase().replace(/[\s*：:（）()]/g,'');
+const normalizedLabel=value=>String(value||'').toLowerCase().replace(/[\s*：:（）()]/g,'').replace(/^(请填写|请输入|请选择|请录入|请补充|请注明|填写|输入|选择)/,'');
 const sectionNames={
  personal:['个人信息','基本信息'],job_intention:['求职意向','求职偏好'],education:['教育背景','教育经历'],
  internships:['实习经历','实习经验'],projects:['项目经历','项目经验'],cadre_experiences:['校园经历','学生工作'],
@@ -152,7 +160,65 @@ function optionMatchesFact(option,fact){
 }
 const metadataFieldAliases={projects:{project_name:'name'}};
 const personalIntentCityLabels=new Set(['期望城市','意向城市','期望工作地点','意向工作地点'].map(normalizedLabel));
-function metadataCandidates(field,facts){
+function matchedIdentityIndex(recordLabel,facts,sectionKey){
+ const recordText=normalizedLabel(recordLabel);
+ if(!recordText)return null;
+ const rows=new Map();
+ for(const fact of facts){
+  const parts=fact.path.split('.');
+  if(parts[0]!==sectionKey||!/^\d+$/.test(parts[1])||!fact.recordLabel)continue;
+  rows.set(Number(parts[1]),normalizedLabel(fact.recordLabel));
+ }
+ const exact=[...rows].filter(([,anchor])=>recordText===anchor).map(([index])=>index);
+ if(exact.length===1)return exact[0];
+ const contained=[...rows].filter(([,anchor])=>anchor.length>=2&&(recordText.includes(anchor)||anchor.includes(recordText))).map(([index])=>index);
+ return contained.length===1?contained[0]:-1;
+}
+function genericRecordLabel(value,section){
+ let label=normalizedLabel(value);
+ if(!label)return true;
+ label=label.replace(/\d+|第|条|记录|新增|未填写|待填写|空白/g,'');
+ const names=[section.key,section.title,...(sectionNames[section.key]||[])].map(normalizedLabel);
+ return !label||names.some(name=>label===name);
+}
+function recordAssignments(fields,facts){
+ const assignments=new Map();
+ for(const section of SECTIONS.filter(item=>item.repeatable)){
+  const groups=new Map();
+  for(const field of fields){
+   const rawKey=String(field.fieldKey||''),parts=rawKey.split('.').filter(Boolean);
+   const fieldSection=(parts.length>1?sectionKeyOf(parts[0]):undefined)||sectionKeyOf(field.section);
+   const groupIndex=Number(field.groupIndex);
+   if(fieldSection!==section.key||!Number.isInteger(groupIndex)||groupIndex<0)continue;
+   if(!groups.has(groupIndex))groups.set(groupIndex,[]);
+   groups.get(groupIndex).push(field);
+  }
+  const sourceRows=[...new Set(facts.map(fact=>fact.path.split('.')).filter(parts=>parts[0]===section.key&&/^\d+$/.test(parts[1])).map(parts=>Number(parts[1])))].sort((a,b)=>a-b);
+  const decided=new Map(),used=new Set();
+  for(const [groupIndex,groupFields] of groups){
+   const labels=[...new Set(groupFields.map(field=>field.recordLabel).filter(label=>!genericRecordLabel(label,section)))];
+   const matches=[...new Set(labels.map(label=>matchedIdentityIndex(label,facts,section.key)).filter(index=>index!==null))];
+   const valid=matches.length===1&&matches[0]>=0?matches[0]:-1;
+   decided.set(groupIndex,labels.length?valid:null);
+  }
+  const collisions=new Set();
+  for(const [groupIndex,index] of decided){
+   if(index===null||index<0)continue;
+   if(used.has(index))collisions.add(index);else used.add(index);
+  }
+  if(collisions.size)for(const [groupIndex,index] of decided)if(collisions.has(index))decided.set(groupIndex,-1);
+  const remaining=sourceRows.filter(index=>!used.has(index)&&!collisions.has(index));
+  const hasIdentified=[...decided.values()].some(index=>index!==null&&index>=0);
+  for(const groupIndex of [...groups.keys()].sort((a,b)=>a-b)){
+   if(decided.get(groupIndex)!==null)continue;
+   if(hasIdentified)decided.set(groupIndex,remaining.length?remaining.shift():-1);
+   else decided.set(groupIndex,sourceRows.includes(groupIndex)?groupIndex:-1);
+  }
+  for(const [groupIndex,groupFields] of groups)for(const field of groupFields)assignments.set(field.id,decided.get(groupIndex));
+ }
+ return assignments;
+}
+function metadataCandidates(field,facts,assignments){
  const rawKey=String(field.fieldKey||'');
  const keyParts=rawKey.split('.').filter(Boolean);
  const keySection=keyParts.length>1?sectionKeyOf(keyParts[0]):undefined;
@@ -171,6 +237,18 @@ function metadataCandidates(field,facts){
   const parts=fact.path.split('.');
   return (!sectionKey||parts[0]===sectionKey)&&(!fieldKey||parts.at(-1)===fieldKey);
  });
+ const assignedIndex=assignments?.has(field.id)?assignments.get(field.id):null;
+ if(assignedIndex!==null){
+  if(assignedIndex<0)return [];
+  candidates=candidates.filter(fact=>Number(fact.path.split('.')[1])===assignedIndex);
+  return candidates;
+ }
+ const identifiedIndex=schemaSection?.repeatable?matchedIdentityIndex(field.recordLabel,facts,sectionKey):null;
+ if(identifiedIndex!==null){
+  if(identifiedIndex<0)return [];
+  candidates=candidates.filter(fact=>Number(fact.path.split('.')[1])===identifiedIndex);
+  return candidates;
+ }
  const groupIndex=Number(field.groupIndex);
  if(field.groupIndex!==undefined&&field.groupIndex!==null&&schemaSection?.repeatable&&Number.isInteger(groupIndex)&&groupIndex>=0){
   candidates=candidates.filter(fact=>Number(fact.path.split('.')[1])===groupIndex);
@@ -178,10 +256,10 @@ function metadataCandidates(field,facts){
  return candidates;
 }
 export function localPlan(fields,resume){
- const facts=flattenResume(resume),mappings=[];
+ const facts=flattenResume(resume),assignments=recordAssignments(fields,facts),mappings=[];
  for(const field of fields){
-  const label=normalizedLabel(field.label),metadata=metadataCandidates(field,facts);
-  const labelCandidates=facts.filter(fact=>{const parts=fact.path.split('.'),sourceKey=`${parts[0]}.${parts.at(-1)}`;return (aliases[sourceKey]||[]).some(alias=>label===normalizedLabel(alias));});
+  const labels=[field.label,field.placeholder,field.helpText].map(normalizedLabel).filter(Boolean),metadata=metadataCandidates(field,facts,assignments);
+  const labelCandidates=facts.filter(fact=>{const parts=fact.path.split('.'),sourceKey=`${parts[0]}.${parts.at(-1)}`;return (aliases[sourceKey]||[]).some(alias=>labels.includes(normalizedLabel(alias)));});
   let candidates=metadata===null?labelCandidates:metadata.filter(fact=>{
    if(field.fieldKey)return true;
    return labelCandidates.some(candidate=>candidate.path===fact.path);

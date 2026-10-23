@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {parseResumeImages,requestJSON} from '../extension/lib/ai.js';
+import {parseResumeImages,planVisualAction,requestJSON} from '../extension/lib/ai.js';
 
 const PNG_DATA_URL='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
@@ -70,5 +70,51 @@ test('requestJSON preserves plain text content when no images are supplied',asyn
   assert.deepEqual(await requestJSON(settings,'system',{plain:true}),{ok:true});
   assert.equal(typeof requests[0].messages[1].content,'string');
   assert.deepEqual(JSON.parse(requests[0].messages[1].content),{plain:true});
+ });
+});
+
+test('visual planner prefers a validated candidate id and returns CSS coordinates',async()=>{
+ await withMockAPI(async({settings,requests,setResponse})=>{
+  setResponse({action:'click',candidateId:'degree-option-master',x:9999,y:9999,reason:'选择硕士'});
+  const action=await planVisualAction({
+   image:PNG_DATA_URL,field:{id:'degree',label:'学历类型',recordLabel:'示例大学'},value:'硕士',
+   candidates:[{id:'degree-option-master',label:'硕士',role:'option',rect:{x:40,y:80,width:120,height:32}}],
+   regions:[],history:[],viewport:{width:800,height:600,imageWidth:1600,imageHeight:1200,scaleX:2,scaleY:2}
+  },settings);
+  assert.deepEqual(action,{action:'click',candidateId:'degree-option-master',x:100,y:96,coordinateSpace:'css',reason:'选择硕士'});
+  const payload=JSON.parse(requests[0].messages[1].content[0].text);
+  assert.equal(payload.coordinateSpace,'css_pixels');
+  assert.equal(payload.candidates[0].id,'degree-option-master');
+  assert.ok(!requests[0].messages[1].content[0].text.includes(PNG_DATA_URL));
+ });
+});
+
+test('visual planner blocks protected controls and unverified coordinates',async()=>{
+ await withMockAPI(async({settings,setResponse})=>{
+  setResponse({action:'click',candidateId:'submit'});
+  const protectedAction=await planVisualAction({
+   image:PNG_DATA_URL,field:{label:'学历类型'},value:'硕士',
+   candidates:[{id:'submit',label:'提交申请',rect:{x:20,y:20,width:80,height:30}}],regions:[],history:[],
+   viewport:{width:800,height:600}
+  },settings);
+  assert.equal(protectedAction.action,'manual');
+  setResponse({action:'click',x:400,y:400,coordinateSpace:'css'});
+  const outside=await planVisualAction({
+   image:PNG_DATA_URL,field:{label:'学历类型'},value:'硕士',
+   candidates:[{id:'master',label:'硕士',rect:{x:20,y:20,width:80,height:30}}],regions:[],history:[],
+   viewport:{width:800,height:600}
+  },settings);
+  assert.equal(outside.action,'manual');
+ });
+});
+
+test('visual planner clamps scrolling and rejects sensitive action fields before API transmission',async()=>{
+ await withMockAPI(async({settings,requests,setResponse})=>{
+  setResponse({action:'scroll',deltaY:9000,reason:'继续向下查找'});
+  const scroll=await planVisualAction({image:PNG_DATA_URL,field:{label:'学历类型'},value:'硕士',viewport:{width:800,height:600}},settings);
+  assert.deepEqual(scroll,{action:'scroll',deltaY:1200,reason:'继续向下查找'});
+  const manual=await planVisualAction({image:PNG_DATA_URL,field:{label:'上传附件'},value:'resume.pdf',viewport:{width:800,height:600}},settings);
+  assert.equal(manual.action,'manual');
+  assert.equal(requests.length,1);
  });
 });

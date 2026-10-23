@@ -12,9 +12,11 @@ test('content messages receive allowed profile facts but never API settings or p
   const page={id:'test-extension',tab:{id:7},url:'https://jobs.example.test/apply'};
   const send=(message,sender=page)=>new Promise(resolve=>{if(!handler(message,sender,resolve))resolve(undefined);});
   const panel=await send({type:'PANEL_STATE'});
-  assert.deepEqual(panel,{ok:true,resumes:[{id:'demo',name:'虚构简历'}],activeId:'demo'});
+  assert.deepEqual(panel.resumes,[{id:'demo',name:'虚构简历'}]);assert.equal(panel.activeId,'demo');assert.equal(panel.aiConfigured,true);assert.deepEqual(panel.control,{permitted:false,enabled:false});
   const facts=await send({type:'RESUME_FACTS',resumeId:'demo'});assert.ok(facts.facts.some(f=>f.value==='林测试'));
   const denied=await send({type:'TEST_API'});assert.equal(denied.ok,false);
+  assert.equal((await send({type:'SET_CONTROL_SETTINGS',enabled:true})).ok,false,'网页内容脚本不能提升调试权限');
+  assert.equal((await send({type:'CONTROL_FILL',resumeId:'demo',fieldId:'x',sourcePath:'personal.name'})).reason,'browser_control_disabled');
   assert.equal(await send({type:'PANEL_STATE'},{...page,id:'forged'}),undefined);
   assert.equal(await send({type:'PANEL_STATE'},{id:'test-extension',url:page.url}),undefined);
   await send({type:'OPEN_WORKBENCH'});assert.equal(opened,1);
