@@ -107,6 +107,13 @@ const EXACT={
  'internships.salary_year':'填写该实习岗位折算或约定的税前年薪，单位为元。',
  'work_experience.salary':'填写税前月薪，单位为元，只填数字。',
  'work_experience.salary_year':'填写税前年薪，单位为元，只填数字。',
+ 'certificate.number':'填写证书上的编号；招聘方不要求时可留空。',
+ 'certificate.issuer':'填写证书上记载的正式颁发机构。',
+ 'certificate.score':'按证书记载填写成绩和量表，不换算或估算。',
+ 'certificate.valid_until':'按证书记载填写有效期；只有明确长期有效时才填写长期有效。',
+ 'family_relations.education_level':'填写该家庭成员的实际教育程度；招聘方未要求可留空。',
+ 'publications.journal_level':'按招聘方认可目录填写期刊级别，不自行认定。',
+ 'training.outcome':'概述培训中实际获得的技能或成果。',
  'publications.impact_factor':'填写论文发表时或招聘方指定口径的影响因子。',
  'publications.author_order':'选择本人在论文署名中的顺序。',
  'publications.doi':'填写 DOI 标识，例如 10.xxxx/xxxxx。'

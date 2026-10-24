@@ -1,7 +1,7 @@
 import {loadState} from './lib/storage.js';
 import {localPlan} from './lib/model.js';
 const $=id=>document.getElementById(id);
-let state,tabId,fields=[],items=[],scanUrl='',control={enabled:false};
+let state,tabId,fields=[],items=[],scanUrl='',scanWarning='',semanticCandidates=false,control={enabled:false};
 let attachmentItems=[],attachmentTargets=[],attachmentTabId=null,attachmentTabUrl='',attachmentRefreshToken=0;
 function status(text){$('status').textContent=text;}
 function busy(value){for(const id of ['floating','scan','local','ai','apply','resume','control'])$(id).disabled=value;}
@@ -50,20 +50,21 @@ function render(){
  }
  if(!items.length){const p=document.createElement('p');p.textContent='暂无确定匹配，可使用 AI，或先补充简历资料。';rows.append(p);}
 }
-async function aiMatch(){const result=await message({type:'MATCH',fields,resumeId:$('resume').value});items=result.items;render();status(`AI 已匹配 ${items.length} / ${fields.length} 项。请检查经历对应和每项内容后填写。`);}
+async function aiMatch(){semanticCandidates=true;const result=await message({type:'MATCH',fields,resumeId:$('resume').value});items=result.items;render();status(`AI 已匹配 ${items.length} / ${fields.length} 项。请检查经历对应和每项内容后填写。${scanWarning}`);}
 async function scan(useAI){
  fields=[];items=[];tabId=null;scanUrl='';$('preview').hidden=true;state=await loadState();
  const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
  if(!tab?.id||!/^https?:/.test(tab.url||''))throw new Error('请在普通网页中使用，浏览器设置页不支持。');
  tabId=tab.id;scanUrl=tab.url;
- await chrome.scripting.executeScript({target:{tabId},files:['content.js']});
- const result=await chrome.tabs.sendMessage(tabId,{type:'SCAN'});if(result.error)throw new Error(result.error);
+ semanticCandidates=useAI;
+ const result=await message({type:'PAGE_SCAN',tabId});if(result.error)throw new Error(result.error);
+ scanWarning=result.warnings?.length?' 部分内嵌页面或富文本组件未能访问，可能未包含在预览内。':'';
  fields=result.fields||[];if(fields.length>250)throw new Error('当前页面字段过多，请使用悬浮助手选区填写。');
  items=localPlan(fields,state.resumes.find(resume=>resume.id===$('resume').value));$('preview').hidden=false;render();
- status(`识别到 ${fields.length} 个字段，本地确定匹配 ${items.length} 项。`);
+ status(`识别到 ${fields.length} 个字段，本地确定匹配 ${items.length} 项。${scanWarning}`);
  if(useAI){try{await aiMatch();}catch(error){status(`AI 匹配未完成：${error.message}。已保留 ${items.length} 项本地匹配，可检查后填写或重试 AI。`);}}
 }
-$('floating').onclick=()=>run(async()=>{const [tab]=await chrome.tabs.query({active:true,currentWindow:true});if(!tab?.id||!/^https?:/.test(tab.url||''))throw new Error('请在普通网页中使用悬浮助手');await chrome.scripting.executeScript({target:{tabId:tab.id},files:['content.js','workflow.js','floating.js']});status('页面右下角已显示悬浮助手。');});
+$('floating').onclick=()=>run(async()=>{const [tab]=await chrome.tabs.query({active:true,currentWindow:true});if(!tab?.id||!/^https?:/.test(tab.url||''))throw new Error('请在普通网页中使用悬浮助手');await chrome.scripting.executeScript({target:{tabId:tab.id},files:['site-adapters.js','content.js','workflow.js','session.js','floating.js']});status('页面右下角已显示悬浮助手。');});
 $('manage').onclick=()=>chrome.runtime.openOptionsPage();
 $('resume').onchange=()=>{fields=[];items=[];$('preview').hidden=true;managerUrl();status('简历已切换，请重新识别页面。');if($('attachments-panel').open)refreshAttachments();};
 $('scan').onclick=()=>run(()=>scan(true));
@@ -80,7 +81,7 @@ $('apply').onclick=()=>run(async()=>{
  const current=await chrome.tabs.get(tabId);if(current.url!==scanUrl)throw new Error('页面地址已改变，请重新识别。');
  const selected=[...$('rows').querySelectorAll('input:checked')].map(input=>items[Number(input.dataset.index)]);
  if(!selected.length)throw new Error('请先选择要填写的项目');
- const result=await chrome.tabs.sendMessage(tabId,{type:'APPLY',items:selected.map(({fieldId,value,sourcePath})=>({fieldId,value,sourcePath})),overwrite:$('overwrite').checked,options:{resumeId:$('resume').value,browserControl:control.enabled,visionFallback:control.enabled&&$('vision').checked}});
+ const result=await message({type:'PAGE_APPLY',tabId,resumeId:$('resume').value,items:selected,overwrite:$('overwrite').checked,options:{semanticCandidates,browserControl:control.enabled,visionFallback:control.enabled&&$('vision').checked}});
  if(result.error)throw new Error(result.error);
  const counts={};for(const entry of result.results||[])counts[entry.status]=(counts[entry.status]||0)+1;
  const protectedCount=(result.results||[]).filter(entry=>entry.reason==='non_empty').length;

@@ -37,6 +37,7 @@ class FakeElement {
     this.options = attributes.options || [];
     this.labels = attributes.labels || [];
     this.events = [];
+    this.listeners = new Map();
     this.style = attributes.style || {};
     this.rect = attributes.rect || { x: 10, y: 20, width: 120, height: 32 };
     this.parent = attributes.parent || null;
@@ -68,6 +69,23 @@ class FakeElement {
 
   getAttribute(name) {
     return this.attributes[name] ?? null;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  removeAttribute(name) {
+    delete this.attributes[name];
+  }
+
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(listener);
+  }
+
+  removeEventListener(type, listener) {
+    this.listeners.set(type, (this.listeners.get(type) || []).filter((item) => item !== listener));
   }
 
   getClientRects() {
@@ -107,6 +125,8 @@ class FakeElement {
 
   dispatchEvent(event) {
     this.events.push(event.type);
+    event.target ||= this;
+    for (const listener of this.listeners.get(event.type) || []) listener(event);
     return true;
   }
 }
@@ -168,7 +188,7 @@ function labelWithNestedControl(text, nestedText) {
   };
 }
 
-function createHarness() {
+function createHarness({ runtimeSend } = {}) {
   const document = new FakeContainer("document");
   document.title = "测试网申";
   document.byId = new Map();
@@ -178,13 +198,15 @@ function createHarness() {
     runtime: {
       id: "personal-resume-test",
       onMessage: { addListener(listener) { listeners.push(listener); } },
+      sendMessage: runtimeSend || (async () => null),
     },
   };
   const context = vm.createContext({
     chrome,
     document,
-    location: { href: "https://jobs.example.test/apply" },
+    location: { href: "https://jobs.example.test/apply", origin: "https://jobs.example.test" },
     Event: FakeEvent,
+    CustomEvent: FakeEvent,
     getComputedStyle: (element) => ({
       display: element.style.display || "block",
       visibility: element.style.visibility || "visible",
@@ -493,6 +515,60 @@ test('custom combobox waits for an asynchronously rendered exact option',async()
  const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'深圳'}]});
  assert.equal(result.results[0].status,'applied',JSON.stringify(result));
  assert.equal(combo.value,'深圳');
+});
+
+test('custom picker can request one bounded semantic candidate and verifies the chosen label',async()=>{
+ let candidateRequest;
+ const {document,send}=createHarness({runtimeSend:async message=>{
+  if(message.type!=='CANDIDATE_MATCH')return null;
+  candidateRequest=message;
+  const match=message.candidates.find(candidate=>candidate.label==='计算机相关类');
+  return {candidateId:match.id,confidence:0.96};
+ }});
+ const menu=new FakeContainer('div',{id:'major-category-options'});menu.id='major-category-options';
+ const mathematics=new FakeElement('div',{role:'option',textContent:'数学相关类'});
+ const computing=new FakeElement('div',{role:'option',textContent:'计算机相关类'});
+ const combo=new FakeElement('input',{
+  role:'combobox',readonly:'',readOnly:true,'aria-controls':menu.id,'aria-label':'专业类别',
+ });
+ computing.onclick=()=>{combo.value='计算机相关类';computing.attributes['aria-selected']='true';};
+ menu.children.push(mathematics,computing);document.byId.set(menu.id,menu);document.children.push(combo,menu);
+ const field=send({type:'SCAN'}).fields[0];
+ const result=await send({
+  type:'APPLY',
+  items:[{fieldId:field.id,value:'电子信息类',sourcePath:'education[0].major_category'}],
+  options:{semanticCandidates:true,resumeId:'resume-1'},
+ });
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(result.results[0].via,'semantic_candidate');
+ assert.equal(combo.value,'计算机相关类');
+ assert.equal(candidateRequest.sourcePath,'education[0].major_category');
+ assert.equal(candidateRequest.candidates.length,2);
+ const verified=send({type:'CONTROL_VERIFY',fieldId:field.id,value:'电子信息类'});
+ assert.equal(verified.verified,true,'verified semantic selection may differ literally from the resume value');
+});
+
+test('rich text targets use the bounded editor event bridge instead of assigning HTML',async()=>{
+ const {document,send}=createHarness();
+ const editor=new FakeElement('div',{'aria-label':'项目描述',contenteditable:'true',className:'ql-editor'});
+ editor.isContentEditable=true;
+ editor.matches=selector=>selector.includes('.ql-editor');
+ let request;
+ editor.addEventListener('personal-resume-editor-request',event=>{
+  request=event.detail;
+  editor.dispatchEvent(new FakeEvent('personal-resume-editor-response',{detail:{
+   token:event.detail.token,requestId:event.detail.requestId,ok:true,actual:event.detail.text,editor:'quill',
+  }}));
+ });
+ document.children.push(editor);
+ const field=send({type:'SCAN'}).fields[0];
+ assert.equal(field.type,'richtext');
+ const result=await send({type:'APPLY',items:[{fieldId:field.id,value:'项目 <b>纯文本</b>'}]});
+ assert.equal(result.results[0].status,'applied',JSON.stringify(result));
+ assert.equal(result.results[0].via,'quill');
+ assert.equal(request.action,'setPlainText');
+ assert.equal(request.text,'项目 <b>纯文本</b>');
+ assert.equal(editor.getAttribute('data-personal-resume-editor-token'),null,'temporary token is removed');
 });
 
 test('bridge cancel stops an in-flight custom control wait',async()=>{

@@ -9,9 +9,8 @@ const f=(key,label,type='text',values)=>({key,label,type,...(values?{options:Arr
 const group=(key,title,repeatable,fields)=>({key,title,...(repeatable?{repeatable:true}:{}),fields});
 
 // Field names come from the extension's packaged default schema and the
-// metadata-only cv.playoffer.cn/resumes snapshot. No packaged valueScript is
-// retained or executed. The two empty-site modules at the end use conservative
-// editable fields because neither artifact exposes their remote schema.
+// metadata-only cv.playoffer.cn/resumes snapshot and public schema 2.0.16.
+// No packaged or downloaded valueScript is retained or executed.
 export const SECTIONS=[
  group('personal','个人信息',false,[
   f('name','姓名'),f('name_pinyin','姓名拼音'),f('english_name','英文姓名'),f('gender','性别'),
@@ -104,7 +103,8 @@ export const SECTIONS=[
   f('certificate','证书认证','textarea'),f('soft','软技能','textarea')
  ]),
  group('certificate','证书',true,[
-  f('certificate_name','资质证书名称'),f('certificate_type','资质证书类型'),f('certificate_date','证书获取时间','date')
+  f('certificate_name','资质证书名称'),f('certificate_type','资质证书类型'),f('certificate_date','证书获取时间','date'),
+  f('number','证书编号'),f('issuer','证书颁发机构'),f('score','证书成绩'),f('valid_until','证书有效期'),f('description','证书描述','textarea')
  ]),
  group('language_skills','外语能力',true,[
   f('language_type','语言种类'),f('acquired_at','获得时间','date'),f('certificate_name','证书名称'),
@@ -113,6 +113,7 @@ export const SECTIONS=[
  ]),
  group('family_relations','家庭情况',true,[
   f('name','姓名'),f('relation','关系'),f('birth_date','出生日期','date'),f('age','年龄','number'),
+  f('gender','性别'),f('education_level','教育程度'),f('ethnicity','民族'),
   f('phone','联系电话','tel'),f('id_card','身份证号'),f('company','工作单位'),
   f('has_relative_in_target_company','是否在当前单位任职','select',yesNo),f('position','职位'),
   f('political_status','政治面貌'),f('address','联系地址')
@@ -129,11 +130,11 @@ export const SECTIONS=[
  group('publications','论文发表',true,[
   f('title','论文标题'),f('journal','发表期刊'),f('authors','作者'),f('journal_issue','期刊卷期'),
   f('impact_factor','影响因子','number'),f('author_order','作者顺序','select',['第一作者','共同第一作者','第二作者','第三作者','第四作者及以后','通讯作者']),
-  f('publish_date','发表时间','date'),f('doi','DOI号'),f('description','论文摘要','textarea')
+  f('publish_date','发表时间','date'),f('doi','DOI号'),f('journal_level','刊物等级'),f('paper_url','论文链接','url'),f('description','论文摘要','textarea')
  ]),
  group('training','培训经历',true,[
   f('name','培训名称'),f('organization','培训机构'),f('start_date','开始时间','month'),f('end_date','结束时间','month'),
-  f('date_range','起止时间'),f('address','培训地点'),f('certificate','获得证书'),f('description','培训内容','textarea')
+  f('date_range','起止时间'),f('address','培训地点'),f('certificate','获得证书'),f('outcome','培训收获','textarea'),f('description','培训内容','textarea')
  ])
 ];
 

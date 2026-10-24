@@ -31,6 +31,9 @@
     "textarea",
     "select",
     "[contenteditable]:not([contenteditable='false'])",
+    ".ck-editor__editable",
+    ".ql-editor",
+    "[data-ckeditor-instance]",
     "[role='combobox']",
     "[aria-haspopup='listbox']",
     "[aria-haspopup='tree']",
@@ -63,6 +66,11 @@
     "site_confirmation_required",
   ]);
   const HIGHEST_DEGREE_CONFIRMATION_TEXT = "已选择另一学历为最高学历，请确认是否修改？";
+  const EDITOR_REQUEST_EVENT = "personal-resume-editor-request";
+  const EDITOR_RESPONSE_EVENT = "personal-resume-editor-response";
+  const EDITOR_TOKEN_ATTRIBUTE = "data-personal-resume-editor-token";
+  const editorBridgeToken = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
+  const semanticSelections = new Map();
 
   function cleanText(value) {
     return String(value || "").replace(/\s+/g, " ").trim();
@@ -74,7 +82,7 @@
   }
 
   function fieldContainer(element) {
-    return element?.closest?.(FIELD_CONTAINER_SELECTOR) || null;
+    return globalThis.__personalResumeSiteAdapters?.describe(element)?.container || element?.closest?.(FIELD_CONTAINER_SELECTOR) || null;
   }
 
   function isVisible(element) {
@@ -96,16 +104,32 @@
   function isSupportedField(element) {
     if (element.closest?.('[data-personal-resume-ui]') || element.getRootNode?.()?.host?.hasAttribute?.('data-personal-resume-ui')) return false;
     const tag = String(element.tagName || "").toLowerCase();
-    if (!isVisible(element)) return false;
+    const richEditor = isSupportedRichEditorTarget(element);
+    if (!isVisible(element) && !richEditor) return false;
     const customPicker = isCustomPicker(element);
-    if ((element.readOnly || element.getAttribute("readonly") !== null) && !customPicker) return false;
+    if ((element.readOnly || element.getAttribute("readonly") !== null) && !customPicker && !richEditor) return false;
     if (tag === "input") {
       const type = String(element.type || "text").toLowerCase();
       if (EXCLUDED_INPUT_TYPES.has(type)) return false;
       if (type === "checkbox" && isSensitiveConsentCheckbox(element)) return false;
       return true;
     }
-    return tag === "textarea" || tag === "select" || element.isContentEditable || customPicker;
+    return tag === "textarea" || tag === "select" || element.isContentEditable || customPicker || richEditor;
+  }
+
+  function isSupportedRichEditorTarget(element) {
+    if (!element) return false;
+    const className = cleanText(element.className);
+    if (/(^|\s)(ck-editor__editable|ql-editor)(\s|$)/.test(className) ||
+      element.getAttribute?.("data-ckeditor-instance") !== null) return true;
+    const tag = String(element.tagName || "").toLowerCase();
+    if (tag !== "textarea" || !element.id) return false;
+    const escaped = globalThis.CSS?.escape ? globalThis.CSS.escape(element.id) : element.id.replace(/[^\w-]/g, "");
+    return Boolean(
+      document.getElementById?.(`cke_${element.id}`) ||
+      element.nextElementSibling?.matches?.(".cke,.tox-tinymce") ||
+      document.querySelector?.(`[data-editor-for='${escaped}'],.tox-tinymce[aria-labelledby*='${escaped}']`),
+    );
   }
 
   function isCustomPicker(element) {
@@ -160,6 +184,8 @@
       element.getAttribute("aria-label") || element.getAttribute("data-form-field-i18n-name"),
     );
     if (direct) return disambiguateGroupedLabel(element, direct);
+    const adaptedLabel = globalThis.__personalResumeSiteAdapters?.describe(element)?.label;
+    if (adaptedLabel) return disambiguateGroupedLabel(element, adaptedLabel);
 
     const labelledBy = cleanText(element.getAttribute("aria-labelledby"));
     if (labelledBy) {
@@ -288,6 +314,8 @@
   }
 
   function getSection(element) {
+    const adaptedSection = globalThis.__personalResumeSiteAdapters?.describe(element)?.section;
+    if (adaptedSection) return adaptedSection;
     if (typeof element.closest !== "function") return undefined;
     const start = fieldContainer(element)?.parentElement || element.parentElement || element;
     const namedContainer = start.closest(
@@ -323,6 +351,7 @@
   function fieldType(element) {
     const tag = String(element.tagName || "").toLowerCase();
     if (tag === "select") return element.multiple ? "select-multiple" : "select-one";
+    if (isSupportedRichEditorTarget(element)) return "richtext";
     if (tag === "textarea") return "textarea";
     if (element.isContentEditable) return "contenteditable";
     if (isDatePicker(element) && (
@@ -345,7 +374,9 @@
 
   function currentValue(element, type) {
     if (type === "checkbox" || type === "radio") return Boolean(element.checked);
-    if (type === "contenteditable") return cleanText(element.textContent);
+    if (type === "contenteditable" || type === "richtext") {
+      return cleanText(element.value != null && String(element.value) ? element.value : element.textContent);
+    }
     if (element.value != null && String(element.value)) return String(element.value);
     if (type === "combobox" || type === "date-picker") {
       const explicit = cleanText(
@@ -398,12 +429,13 @@
   }
 
   function recordInfo(element) {
-    const record = element.closest?.(RECORD_SELECTOR);
+    const adapted = globalThis.__personalResumeSiteAdapters?.describe(element);
+    const record = element.closest?.(RECORD_SELECTOR) || adapted?.record;
     if (!record) return {};
     const collection = record.parentElement?.closest?.(
       "[id^='formily-item-'][id$='_list'],[data-form-array],[class*='applyFormModuleWrapper'],[class*='form-array'],[class*='gridContainer'],[class*='GridContainer']",
     ) || record.parentElement;
-    const records = Array.from(collection?.querySelectorAll?.(RECORD_SELECTOR) || [])
+    const records = adapted?.record === record && adapted.records?.length ? adapted.records : Array.from(collection?.querySelectorAll?.(RECORD_SELECTOR) || [])
       .filter((candidate) => candidate.parentElement === record.parentElement || candidate === record);
     const groupIndex = records.indexOf(record);
     const heading = record.querySelector?.("h1,h2,h3,h4,h5,h6,[class*='recordTitle'],[class*='itemTitle'],[class*='card-title']");
@@ -960,7 +992,62 @@
       : closeWith({ status: "failed", reason: "value_mismatch" });
   }
 
-  async function applyCustomPicker(element, value, operationId) {
+  async function requestSemanticCandidate(element, applyContext, operationId) {
+    // One observed menu and one scalar fact only; date precision and multi-choice
+    // decomposition require their dedicated validators.
+    if (isMultiPicker(element) || fieldType(element) === "date-picker") return null;
+    if (applyContext?.options?.semanticCandidates !== true || !applyContext?.sourcePath ||
+      typeof chrome.runtime?.sendMessage !== "function") return null;
+    const visible = visibleControlCandidates(element)
+      .filter((candidate) => isVisible(candidate) && !isDisabledOption(candidate))
+      .slice(0, 100);
+    const candidates = visible.map((candidate) => ({
+      id: candidateId(candidate),
+      label: shortText(candidate.getAttribute?.("aria-label") || candidate.getAttribute?.("title") || candidate.textContent, 120),
+    })).filter((candidate) => candidate.label);
+    if (!candidates.length || operationId !== activeOperationId) return null;
+    const description = describeField(element);
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({
+        type: "CANDIDATE_MATCH",
+        fieldId: applyContext.fieldId,
+        sourcePath: applyContext.sourcePath,
+        resumeId: applyContext.options.resumeId,
+        candidates,
+        field: {
+          label: description.label,
+          type: description.type,
+          section: description.section,
+          context: description.context,
+          recordLabel: description.recordLabel,
+        },
+      });
+    } catch (error) {
+      return null;
+    }
+    if (operationId !== activeOperationId) return { status: "skipped", reason: "cancelled" };
+    const selectedId = String(response?.candidateId || response?.id || response?.result?.candidateId || "");
+    const declared = candidates.filter((candidate) => candidate.id === selectedId);
+    const option = selectedId ? controlCandidates.get(selectedId) : null;
+    const live = visibleControlCandidates(element).filter((candidate) => candidate === option);
+    if (declared.length !== 1 || live.length !== 1 || !option?.isConnected || !isVisible(option) ||
+      isDisabledOption(option)) return null;
+    const selectedLabel = declared[0].label;
+    dispatchPointerClick(option);
+    const changed = await waitFor(() => {
+      const actual = currentValue(element, fieldType(element));
+      return normalizedChoice(actual) === normalizedChoice(selectedLabel) ||
+        selectedPickerValues(element).some((selected) => normalizedChoice(selected) === normalizedChoice(selectedLabel)) ||
+        option.getAttribute?.("aria-selected") === "true" || option.getAttribute?.("data-selected") === "true";
+    }, operationId, 700);
+    if (changed.cancelled) return { status: "skipped", reason: "cancelled" };
+    if (!changed.value) return { status: "failed", reason: "semantic_choice_mismatch" };
+    semanticSelections.set(applyContext.fieldId, { element, label: selectedLabel });
+    return { status: "applied", via: "semantic_candidate", selectedLabel };
+  }
+
+  async function applyCustomPicker(element, value, operationId, applyContext = {}) {
     const requested = cleanText(value);
     if (!requested) return { status: "skipped", reason: "empty_choice" };
     const choices = isMultiPicker(element)
@@ -971,7 +1058,7 @@
         if (selectedPickerValues(element).some((selected) => normalizedChoice(selected) === normalizedChoice(choice))) {
           continue;
         }
-        const result = await applyCustomPicker(element, choice, operationId);
+        const result = await applyCustomPicker(element, choice, operationId, applyContext);
         if (result.status !== "applied") return result;
       }
       return { status: "applied" };
@@ -1010,6 +1097,8 @@
         nativeSetter(search, "value", originalSearchValue);
         search.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
       }
+      const semantic = await requestSemanticCandidate(element, applyContext, operationId);
+      if (semantic) return semantic;
       sendEscape(element);
       return {
         status: "skipped",
@@ -1162,12 +1251,57 @@
     return { text };
   }
 
-  async function applyValue(element, value, operationId) {
+  async function applyRichTextValue(element, value, operationId) {
+    const validated = validatedText(element, value);
+    if (validated.error) return { status: "skipped", reason: validated.error };
+    const requestId = `${documentNonce}-editor-${operationId}-${Date.now()}`;
+    const token = `${editorBridgeToken}-${requestId}`;
+    element.setAttribute?.(EDITOR_TOKEN_ATTRIBUTE, token);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        element.removeEventListener?.(EDITOR_RESPONSE_EVENT, onResponse, true);
+        if (element.getAttribute?.(EDITOR_TOKEN_ATTRIBUTE) === token) {
+          element.removeAttribute?.(EDITOR_TOKEN_ATTRIBUTE);
+        }
+        resolve(result);
+      };
+      const onResponse = (event) => {
+        const detail = event.detail;
+        if (!detail || detail.token !== token || detail.requestId !== requestId) return;
+        if (operationId !== activeOperationId) {
+          finish({ status: "skipped", reason: "cancelled" });
+          return;
+        }
+        finish(detail.ok && detail.actual === validated.text
+          ? { status: "applied", via: detail.editor || "richtext_bridge" }
+          : { status: "failed", reason: detail.reason || "value_mismatch" });
+      };
+      const timeout = setTimeout(() => finish({ status: "skipped", reason: "richtext_bridge_unavailable" }), 1200);
+      element.addEventListener?.(EDITOR_RESPONSE_EVENT, onResponse, true);
+      element.dispatchEvent?.(new CustomEvent(EDITOR_REQUEST_EVENT, {
+        bubbles: false,
+        composed: false,
+        detail: {
+          token,
+          requestId,
+          origin: String(location.origin),
+          action: "setPlainText",
+          text: validated.text,
+        },
+      }));
+    });
+  }
+
+  async function applyValue(element, value, operationId, applyContext = {}) {
     const type = fieldType(element);
     const tag = String(element.tagName || "").toLowerCase();
 
     if (type === "combobox" || type === "date-picker") {
-      return applyCustomPicker(element, value, operationId);
+      return applyCustomPicker(element, value, operationId, applyContext);
     } else if (type === "checkbox") {
       const checked = booleanValue(value);
       if (checked === null) return { status: "skipped", reason: "checkbox_requires_boolean" };
@@ -1199,6 +1333,8 @@
         return { status: "skipped", reason: "option_disabled" };
       }
       nativeSetter(element, "value", String(option.value));
+    } else if (type === "richtext") {
+      return applyRichTextValue(element, value, operationId);
     } else if (type === "contenteditable") {
       const validated = validatedText(element, value);
       if (validated.error) return { status: "skipped", reason: validated.error };
@@ -1438,7 +1574,12 @@
     const boolean = booleanValue(value);
     const radioVerified = type === "radio" && boolean !== null &&
       radioChoiceBoolean(resolved.element) === boolean && Boolean(resolved.element.checked);
-    const verified = radioVerified || normalizedChoice(actual) === normalizedChoice(expected) ||
+    const semantic = semanticSelections.get(fieldId);
+    const semanticVerified = semantic?.element === resolved.element && (
+      normalizedChoice(actual) === normalizedChoice(semantic.label) ||
+      selectedPickerValues(resolved.element).some((selected) => normalizedChoice(selected) === normalizedChoice(semantic.label))
+    );
+    const verified = radioVerified || semanticVerified || normalizedChoice(actual) === normalizedChoice(expected) ||
       selectedPickerValues(resolved.element).some((selected) => normalizedChoice(selected) === normalizedChoice(expected));
     return { ok: true, verified, actual: shortText(actual, 200), reason: verified ? undefined : "value_mismatch", operationId };
   }
@@ -1497,7 +1638,12 @@
         if (!overwrite && hasExistingValue(element, type)) {
           results.push({ fieldId, status: "skipped", reason: "non_empty" }); continue;
         }
-        let result = await applyValue(element, item.value, operationId);
+        semanticSelections.delete(fieldId);
+        let result = await applyValue(element, item.value, operationId, {
+          fieldId,
+          sourcePath: typeof item?.sourcePath === "string" ? item.sourcePath : "",
+          options,
+        });
         if (result.status !== "applied" && !CONTROL_FALLBACK_BLOCKED_REASONS.has(result.reason) &&
           options.browserControl === true) {
           result = await requestControlFill(item, overwrite, options, operationId) || result;

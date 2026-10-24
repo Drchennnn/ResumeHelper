@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
-import {SECTIONS,normalizeResume,flattenResume,completionStats,resolvePlan,localPlan} from '../extension/lib/model.js';
-import {endpoint,parseJSON,requestJSON,matchFields,parseResumeText} from '../extension/lib/ai.js';
+import {SECTIONS,normalizeResume,flattenResume,businessFacts,completionStats,resolvePlan,localPlan} from '../extension/lib/model.js';
+import {endpoint,parseJSON,requestJSON,matchFields,parseResumeText,chooseSemanticCandidate} from '../extension/lib/ai.js';
 import http from 'node:http';
 test('normalize imports only defined fields, preserves repeated sections and strips executable properties',()=>{const r=normalizeResume({personal:{name:'林测试',evil:'bad'},education:[{school:'示例大学',major:'计算机'}],projects:[{name:'演示项目'}],__proto__:{admin:true}});assert.equal(r.personal.name,'林测试');assert.equal(r.personal.evil,undefined);assert.equal(flattenResume(r).find(f=>f.path==='education.0.school').value,'示例大学');assert.equal(r.admin,undefined);});
 test('AI mappings cannot inject arbitrary values, unknown paths or selectors',()=>{const r=normalizeResume({personal:{name:'林测试'},extras:'未分类原文'});const fields=[{id:'a',label:'姓名'},{id:'raw',label:'其他信息'},{id:'notes',label:'补充说明'}];assert.deepEqual(resolvePlan({mappings:[{fieldId:'a',sourcePath:'personal.name',value:'攻击值',selector:'body'},{fieldId:'x',sourcePath:'personal.name'},{fieldId:'raw',sourcePath:'extras'},{fieldId:'notes',sourcePath:'extras'}]},fields,r).map(x=>[x.fieldId,x.value]),[['a','林测试'],['notes','未分类原文']]);});
@@ -209,4 +209,110 @@ test('unknown populated records stay protected while a fresh blank record receiv
  const plan=localPlan(fields,resume);
  assert.deepEqual(plan.map(item=>[item.fieldId,item.sourcePath]),[['fresh','cadre_experiences.0.organization']]);
  assert.equal(resolvePlan({mappings:[{fieldId:'old',sourcePath:'cadre_experiences.0.organization'}]},fields,resume).length,0);
+});
+
+test('business facts derive only uniquely knowable education and nonempty experience facts',()=>{
+ const resume=normalizeResume({
+  education:[
+   {school:'本科大学',degree:'本科',major:'软件工程',end_date:'2024-06'},
+   {school:'硕士大学',degree:'硕士研究生',academic_degree:'工学硕士',major:'人工智能',end_date:'2027-10'}
+  ],
+  internships:[{company:'示例科技',position:'实习生',start_date:'2025-07'}],
+  projects:[{name:'检索系统'}]
+ });
+ const facts=new Map(flattenResume(resume).map(fact=>[fact.path,fact.value]));
+ assert.equal(facts.get('personal.highest_degree'),'硕士研究生');
+ assert.equal(facts.get('personal.academic_degree'),'工学硕士');
+ assert.equal(facts.get('personal.graduate_school'),'硕士大学');
+ assert.equal(facts.get('personal.graduation_major'),'人工智能');
+ assert.equal(facts.get('personal.graduation_time'),'2027-10');
+ assert.equal(facts.get('business.has_internships'),'是');
+ assert.equal(facts.get('business.has_projects'),'是');
+ assert.equal(facts.has('business.has_work_experience'),false);
+ assert.equal(facts.get('business.earliest_work_or_internship_date'),'2025-07');
+ assert.equal(facts.get('business.first_degree'),'本科');
+ assert.equal(facts.get('business.first_degree_school'),'本科大学');
+ assert.equal(businessFacts(resume).some(fact=>fact.path==='business.first_degree_major'&&fact.value==='软件工程'),true);
+ const ambiguous=normalizeResume({education:[{school:'甲校',degree:'硕士'},{school:'乙校',degree:'硕士'}]});
+ assert.equal(flattenResume(ambiguous).some(fact=>fact.path==='personal.graduate_school'),false);
+});
+
+test('unified work and internship metadata preserves canonical source paths and record identity',()=>{
+ const resume=normalizeResume({
+  internships:[{company:'实习公司',position:'算法实习生'}],
+  work_experience:[{company:'正式公司',position:'工程师'}]
+ });
+ const fields=[
+  {id:'intern',label:'职位',section:'工作及实习经历',fieldKey:'position',recordLabel:'实习公司'},
+  {id:'work',label:'职位',section:'工作/实习经历',fieldKey:'position',recordLabel:'正式公司'},
+  {id:'blank',label:'职位',section:'职业经历',fieldKey:'position'}
+ ];
+ assert.deepEqual(localPlan(fields,resume).map(item=>[item.fieldId,item.sourcePath]),[
+  ['intern','internships.0.position'],['work','work_experience.0.position']
+ ]);
+ assert.equal(resolvePlan({mappings:[{fieldId:'blank',sourcePath:'internships.0.position'}]},fields,resume).length,0);
+});
+
+test('composite mappings join only existing same-record facts with whitelisted separators',()=>{
+ const resume=normalizeResume({projects:[{name:'检索系统',description:'实现混合检索',responsibilities:'负责后端'}]});
+ const field={id:'summary',label:'项目介绍',section:'项目经历',groupIndex:0,type:'textarea'};
+ const accepted=resolvePlan({mappings:[{fieldId:'summary',sourcePaths:['projects.0.description','projects.0.responsibilities'],separator:'\n'}]},[field],resume);
+ assert.equal(accepted[0].value,'实现混合检索\n负责后端');
+ assert.deepEqual(accepted[0].sourcePaths,['projects.0.description','projects.0.responsibilities']);
+ for(const mapping of [
+  {fieldId:'summary',sourcePaths:['projects.0.description','personal.name'],separator:'\n'},
+  {fieldId:'summary',sourcePaths:['projects.0.description','projects.0.responsibilities'],separator:'<script>'},
+  {fieldId:'summary',sourcePaths:['projects.0.description','projects.0.missing'],separator:'\n'}
+ ])assert.equal(resolvePlan({mappings:[mapping]},[field],resume).length,0);
+});
+
+test('semantic candidate selection validates confidence, bounds, identity and unsafe labels',async()=>{
+ let response,request;
+ const server=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;request=JSON.parse(body);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(response)}}]}));});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ const settings={baseUrl:`http://127.0.0.1:${server.address().port}/v1`,model:'candidate-test',apiKey:''};
+ const input={field:{id:'degree',label:'学历层次'},value:'硕士',candidates:[{id:'master',label:'硕士研究生'},{id:'doctor',label:'博士研究生'},{id:'submit',label:'提交申请'}]};
+ try{
+  response={action:'select',candidateId:'master',candidateIndex:0,confidence:.96,reason:'同义学历'};
+  assert.deepEqual(await chooseSemanticCandidate(input,settings),{candidateId:'master',index:0,label:'硕士研究生',confidence:.96,reason:'同义学历'});
+  const payload=JSON.parse(request.messages[1].content);
+  assert.deepEqual(payload.candidates.map(item=>item.id),['master','doctor']);
+  assert.match(request.messages[0].content,/不得返回代码、CSS\/XPath选择器/);
+  assert.match(request.messages[0].content,/日期缺少网页必需的日/);
+  assert.match(request.messages[0].content,/层级分类无法由目标值唯一确定/);
+  response={action:'select',candidateId:'doctor',candidateIndex:1,confidence:.7};
+  assert.equal(await chooseSemanticCandidate(input,settings),null);
+  response={action:'select',candidateId:'missing',candidateIndex:99,confidence:.99};
+  assert.equal(await chooseSemanticCandidate(input,settings),null);
+  response={action:'select',candidateId:'master',candidateIndex:1,confidence:.99};
+  assert.equal(await chooseSemanticCandidate(input,settings),null);
+  response={action:'manual',confidence:.2,reason:'专业类别层级不唯一'};
+  assert.equal(await chooseSemanticCandidate({...input,value:'电子信息'},settings),null);
+ }finally{await new Promise(resolve=>server.close(resolve));}
+});
+
+test('public schema virtual semantics preserve record identity and personal-section business mappings',()=>{
+ const resume=normalizeResume({education:[{school:'甲校',degree:'硕士',academic_degree:'硕士'},{school:'乙校',degree:'本科',academic_degree:'学士'}],projects:[{name:'甲项目'}],awards:[{name:'奖励'}]});
+ const facts=flattenResume(resume);
+ assert.equal(facts.find(f=>f.path==='education.1.is_first_education')?.value,'是');
+ assert.equal(facts.find(f=>f.path==='education.0.is_highest_academic_degree')?.value,'是');
+ assert.equal(facts.find(f=>f.path==='education.1.is_highest_academic_degree')?.value,'否');
+ const result=localPlan([{id:'has-project',label:'是否有项目经历',section:'个人信息',fieldKey:'personal.has_project_experience',type:'radio',options:[{value:'Y',label:'是'},{value:'N',label:'否'}]}],resume);
+ assert.equal(result[0]?.sourcePath,'business.has_projects');assert.equal(result[0]?.value,'Y');
+ const unknown=normalizeResume({education:[{school:'甲校',degree:'本科'},{school:'乙校',degree:'本科'}]});
+ assert.equal(flattenResume(unknown).some(f=>f.path.endsWith('.is_first_education')),false,'同级两条学历不能猜第一学历');
+});
+
+test('public schema fields and legacy spelling migrate to local canonical records without executing rules',()=>{
+ const r=normalizeResume({certificate:[{certificate_name:'证书',certificate_id:'TEST-001',certicate_department:'虚构机构',certicate_score:'90/100',certicate_validdate:'长期有效',certicate_description:'描述'}],family_relations:[{name:'虚构成员',gender:'男',education_level:'本科',ethnicity:'汉族'}],publications:[{title:'虚构论文',journal_level:'招聘方确认',paper_url:'https://example.test/paper'}],training_experiences:[{trainingName:'虚构培训',trainingInstitution:'虚构机构',trainingDate:'2025-01-02 ~ 2025-02-03',trainingOutcome:'实际收获',trainingContent:'实际课程'}]});
+ assert.equal(r.certificate[0].issuer,'虚构机构');assert.equal(r.certificate[0].number,'TEST-001');assert.equal(r.certificate[0].valid_until,'长期有效');
+ assert.equal(r.family_relations[0].education_level,'本科');assert.equal(r.publications[0].paper_url,'https://example.test/paper');
+ assert.equal(r.training[0].name,'虚构培训');assert.equal(r.training[0].start_date,'2025-01-02');assert.equal(r.training[0].end_date,'2025-02-03');assert.equal(r.training[0].outcome,'实际收获');
+});
+
+test('iframe record indexes cannot collapse distinct documents or guess cross-document blank order',()=>{
+ const r=normalizeResume({education:[{school:'甲校',major:'人工智能'},{school:'乙校',major:'计算机'}]});
+ const fields=[{id:'top',label:'专业名称',section:'教育背景',groupIndex:0,frameId:0,documentId:'top-doc',recordLabel:'乙校'},{id:'child',label:'专业名称',section:'教育背景',groupIndex:0,frameId:9,documentId:'child-doc',recordLabel:'甲校'}];
+ const items=localPlan(fields,r);assert.equal(items.find(i=>i.fieldId==='top')?.value,'计算机');assert.equal(items.find(i=>i.fieldId==='child')?.value,'人工智能');
+ assert.equal(localPlan(fields.map(({recordLabel,...field})=>field),r).length,0);
 });

@@ -66,6 +66,10 @@
           <button class="secondary local" type="button">仅本地识别（不调用 API）</button>
           <button class="action secondary-action assist" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>辅助填写</button>
           <button class="action secondary-action prepare" type="button">补齐经历条目并重新识别</button>
+          <button class="action secondary-action continuous" type="button">连续填写动态字段</button>
+          <button class="secondary next-step" type="button">下一步（不提交）</button>
+          <label class="toggle"><input class="continuous-all" type="checkbox">新出现的字段允许使用本简历其他资料</label>
+          <p class="control-help">默认只使用本次勾选资料；勾选上方选项后可匹配整份简历。连续处理最多 5 轮 / 60 秒，保护已有值。下一步需单独点击。</p>
           <button class="secondary attachments" type="button">管理本地附件</button>
           <button class="secondary stop" type="button" hidden>停止当前操作</button>
         </div>
@@ -74,6 +78,7 @@
         <p class="control-help control-state">可在扩展图标的“浏览器控制与视觉兜底”中启用；扩展安装时声明调试权限。</p>
         <label class="toggle"><input class="vision-fallback" type="checkbox" disabled>视觉兜底：失败时发送当前页面截图至 API</label>
         <p class="control-help">视觉模型只在当前字段及其菜单内有限步尝试；仍失败时会说明原因。</p>
+        <p class="control-help frame-note" hidden></p>
         <p class="status" role="status" aria-live="polite">正在载入本地简历…</p>
         <section class="issues" aria-label="未完成字段" hidden></section>
         <section class="preview" hidden>
@@ -91,12 +96,12 @@
   const $ = (selector) => shadow.querySelector(selector);
   const ui = {
     launcher: $(".launcher"), panel: $(".panel"), resume: $(".resume"), edit: $(".edit"),
-    scan: $(".scan"), local: $(".local"), control: $(".browser-control"), vision: $(".vision-fallback"), controlState: $(".control-state"), apiDetail: $(".api-detail"), selected: $(".selected"), assist: $(".assist"), prepare: $(".prepare"), stop: $(".stop"), status: $(".status"), issues: $(".issues"),
+    scan: $(".scan"), local: $(".local"), control: $(".browser-control"), vision: $(".vision-fallback"), controlState: $(".control-state"), apiDetail: $(".api-detail"), selected: $(".selected"), assist: $(".assist"), prepare: $(".prepare"), continuous: $(".continuous"), fullResume: $(".continuous-all"), nextStep: $(".next-step"), stop: $(".stop"), frameNote: $(".frame-note"), status: $(".status"), issues: $(".issues"),
     preview: $(".preview"), summary: $(".summary"), items: $(".items"), ai: $(".ai"),
     overwrite: $(".overwrite"), confirm: $(".confirm"), facts: $(".facts"),
     factsList: $(".facts-list"), picker: $(".picker"),
   };
-  const state = { fields: [], items: [], busy: false, pickCleanup: null, cancelRequested: false, aiConfigured: false };
+  const state = { fields: [], items: [], busy: false, pickCleanup: null, cancelRequested: false, aiConfigured: false, scopedRoot: null, semanticCandidates: false };
 
   function setStatus(message, tone = "") {
     ui.status.textContent = message;
@@ -105,7 +110,7 @@
 
   function setBusy(value) {
     state.busy = value;
-    for (const control of [ui.resume, ui.edit, ui.scan, ui.local, ui.selected, ui.assist, ui.prepare, ui.ai, ui.confirm]) {
+    for (const control of [ui.resume, ui.edit, ui.scan, ui.local, ui.selected, ui.assist, ui.prepare, ui.continuous, ui.fullResume, ui.nextStep, ui.ai, ui.confirm]) {
       control.disabled = value;
     }
   }
@@ -172,6 +177,9 @@
       unsupported_custom_date_panel: "日期面板暂不支持自动操作",
       date_precision_required: "网页要求具体日期，简历只提供了年月，请确认具体日后重试",
       date_present_unavailable: "网页未提供“至今”选项，请确认应填写的结束日期",
+      iframe_control_requires_manual: "内嵌页需要浏览器点击，请手动展开控件后重新识别",
+      unverified_resume_mapping: "资料映射已失效，请重新识别",
+      semantic_choice_mismatch: "AI 选择后的页面回读不一致，请人工确认",
       site_confirmation_required: "网页出现需要确认的提示，已停止后续填写，请先处理提示再重新识别",
       option_disabled: "匹配选项不可用",
       value_mismatch: "页面没有接受填写结果",
@@ -262,7 +270,11 @@
   async function scan(root, options = {}) {
     await refreshProfiles(true);
     const previousItems = state.items;
-    const result = await bridge().scan(root);
+    state.scopedRoot = root || null;
+    state.semanticCandidates = options.useAI === true && state.aiConfigured;
+    const result = root ? await bridge().scan(root) : await message({type:"PAGE_SCAN"});
+    ui.frameNote.hidden = !result.warnings?.length;
+    ui.frameNote.textContent = result.warnings?.length ? "部分内嵌页面或富文本组件未能访问，可能未包含在预览内；可在对应页面单独打开助手。" : "";
     const scannedFields = Array.isArray(result?.fields) ? result.fields : [];
     if (scannedFields.length > 250) throw new Error("识别到的字段超过 250 个，请使用选区填写缩小范围");
     if (!scannedFields.length) throw new Error("所选区域没有发现可填写字段");
@@ -314,9 +326,10 @@
     ui.stop.hidden = false;
     let result;
     try {
-      result = await bridge().apply(items.map(({ fieldId, value, sourcePath }) => ({ fieldId, value, ...(sourcePath ? { sourcePath } : {}) })), ui.overwrite.checked, {
-        resumeId: ui.resume.value, browserControl: ui.control.checked, visionFallback: ui.control.checked && ui.vision.checked,
-      });
+      const options = {resumeId: ui.resume.value, browserControl: ui.control.checked, visionFallback: ui.control.checked && ui.vision.checked, semanticCandidates: state.semanticCandidates};
+      result = state.scopedRoot
+        ? await bridge().apply(items, ui.overwrite.checked, options)
+        : await message({type:"PAGE_APPLY",resumeId:ui.resume.value,items,overwrite:ui.overwrite.checked,options});
     } finally {
       ui.stop.hidden = true;
     }
@@ -503,12 +516,84 @@
       setStatus("正在按本地简历条数补齐已确认的经历分区…");
       try {
         const result = await workflow().prepare(counts);
+        if(result.status === "requires_dialog" || result.sections?.some(section=>section.status === "requires_dialog")){
+          setStatus("新增操作打开了弹窗，已暂停。请先在网页确认，再重新识别。","error");
+          return;
+        }
         const rescanned = await scan(undefined, { useAI: true });
         const detail = result.remaining ? `，仍缺 ${result.remaining} 条；请手动新增或展开对应分区后重新识别` : "";
         setStatus(`已新增 ${result.added} 条经历并重新识别 ${rescanned.fields.length} 个字段${detail}。请检查预览。`, result.remaining ? "error" : "success");
       } finally {
         ui.stop.hidden = true;
       }
+    });
+  };
+  ui.continuous.onclick = (event) => {
+    if (!event.isTrusted) return;
+    return task(async () => {
+      if (state.scopedRoot) throw new Error("连续填写作用于整页，请先识别整页并核对资料");
+      const selected = Array.from(ui.items.querySelectorAll("input:checked")).map(input => state.items[Number(input.dataset.index)]).filter(Boolean);
+      if (!state.fields.length || (!selected.length && !ui.fullResume.checked)) throw new Error("请先识别整页并勾选要使用的资料");
+      const session = globalThis.__personalResumeSession;
+      if (!session?.run) throw new Error("连续填写组件未就绪，请重新打开悬浮助手");
+      const approvedSourcePaths = ui.fullResume.checked
+        ? (await message({type:"RESUME_FACTS",resumeId:ui.resume.value})).facts.map(fact=>fact.path)
+        : [...new Set(selected.flatMap(item => item.sourcePaths || [item.sourcePath]).filter(Boolean))];
+      if (!approvedSourcePaths.length) throw new Error("缺少可信资料路径，请重新识别");
+      const useAI = state.semanticCandidates;
+      const allResults = [];
+      const observer = workflow().observe();
+      state.cancelRequested = false;
+      ui.stop.hidden = false;
+      try {
+        const result = await session.run({
+          scan: async () => {
+            const scan = await message({type:"PAGE_SCAN"});
+            state.fields = (scan.fields || []).filter(fieldIsEmpty);
+            if (state.fields.length > 250) throw new Error("字段超过 250 个，请改用选区填写");
+            return state.fields;
+          },
+          match: async fields => {
+            const result = await message({type:useAI ? "MATCH" : "LOCAL_MATCH",fields,resumeId:ui.resume.value});
+            return normalizedItems(result.items);
+          },
+          apply: async items => {
+            const result = await message({type:"PAGE_APPLY",resumeId:ui.resume.value,items,overwrite:false,options:{semanticCandidates:useAI,browserControl:ui.control.checked,visionFallback:ui.control.checked && ui.vision.checked}});
+            const results = result.results || [];
+            allResults.push(...results);
+            if (results.some(entry => entry.reason === "site_confirmation_required")) return {status:"site_confirmation_required"};
+            return results;
+          },
+          settle: async () => {
+            try { await observer.waitForChanges({timeoutMs:1000,settleMs:180}); }
+            catch(error) { if (!/新增或替换字段超时/.test(error.message)) throw error; }
+          },
+          onProgress: progress => { if(progress.status === "round") setStatus(`连续填写第 ${progress.round} 轮：成功 ${progress.applied} 项，正在检查动态字段…`); },
+        }, {approvedSourcePaths,maxRounds:5,timeoutMs:60000});
+        renderIssues(allResults);
+        await scan(undefined,{remainingOnly:true,preserveIssues:true});
+        const applied = allResults.filter(entry => entry.status === "applied").length;
+        setStatus(`连续填写已结束：${result.rounds.length} 轮，成功 ${applied} 项。${result.status === "requires_user" ? "网页出现确认提示，请先人工处理。" : "其余字段请检查预览；仅在已选择的资料范围内继续处理。"}`, "success");
+      } finally {
+        observer.disconnect();
+        ui.stop.hidden = true;
+        await message({type:"PAGE_CANCEL"}).catch(() => {});
+      }
+    });
+  };
+  ui.nextStep.onclick = (event) => {
+    if (!event.isTrusted) return;
+    return task(async () => {
+      const result = await workflow().advanceStep({explicit:true});
+      if (result.status !== "clicked") {
+        const reasons={validation_errors:"网页提示必填项或格式错误",site_confirmation_required:"网页有待处理的确认弹窗",multiple_forms:"页面有多个表单",no_form:"没有发现明确的表单",ambiguous:"页面有多个下一步按钮",not_found:"没有可用的下一步按钮"};
+        setStatus(`未进入下一步：${reasons[result.reason] || "没有唯一、安全的下一步按钮"}。请在网页确认。`,"error");
+        return;
+      }
+      const observer = workflow().observe();
+      try { await observer.waitForQuiet({timeoutMs:2000,quietMs:250}); } finally { observer.disconnect(); }
+      await scan(undefined,{useAI:false});
+      setStatus("已点击下一步并重新识别，请检查新页面预览；不会自动提交。");
     });
   };
   ui.stop.onclick = (event) => {
@@ -518,7 +603,8 @@
     const bridgeApi = globalThis.__personalResumeBridge;
     if (typeof workflowApi?.cancel === "function") cancelled = workflowApi.cancel() || cancelled;
     if (typeof bridgeApi?.cancel === "function") cancelled = bridgeApi.cancel() || cancelled;
-    message({ type: "CONTROL_CANCEL" }).catch(() => {});
+    if (globalThis.__personalResumeSession?.cancel()) cancelled = true;
+    message({ type: "PAGE_CANCEL" }).catch(() => {});
     if (cancelled) {
       state.cancelRequested = true;
       setStatus("正在停止当前操作；已经完成的填写会保留，其余项目将跳过…");
@@ -529,6 +615,7 @@
     if (!event.isTrusted) return;
     return task(async () => {
     if (!state.fields.length) throw new Error("请先识别页面字段");
+    state.semanticCandidates = true;
     const result = await message({ type: "MATCH", fields: state.fields, resumeId: ui.resume.value });
     state.items = normalizedItems(result.items);
     renderItems();
@@ -542,7 +629,7 @@
       .map((input) => state.items[Number(input.dataset.index)])
       .filter(Boolean);
     const result = await apply(selected);
-    const rescanned = await scan(undefined, { remainingOnly: true, preserveIssues: true, preservePlan: true });
+    const rescanned = await scan(state.scopedRoot || undefined, { remainingOnly: true, preserveIssues: true, preservePlan: true });
     if (result.cancelled) {
       setStatus(`已停止当前操作。已经完成的填写会保留；已重新识别，仍有 ${rescanned.fields.length} 个空字段，其中 ${rescanned.items.length} 项已匹配。`, "error");
       return;

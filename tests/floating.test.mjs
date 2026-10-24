@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
+const sessionSource = await readFile(new URL("../extension/session.js", import.meta.url), "utf8");
 const source = await readFile(new URL("../extension/floating.js", import.meta.url), "utf8");
 
 class FakeNode {
@@ -50,7 +51,7 @@ class FakeShadow extends FakeNode {
     this.markup = value;
     const selectors = [
       ".launcher", ".panel", ".resume", ".edit", ".scan", ".selected", ".assist", ".status",
-      ".prepare", ".attachments", ".stop", ".issues", ".local", ".browser-control", ".vision-fallback", ".control-state", ".api-detail",
+      ".frame-note", ".prepare", ".continuous", ".continuous-all", ".next-step", ".attachments", ".stop", ".issues", ".local", ".browser-control", ".vision-fallback", ".control-state", ".api-detail",
       ".preview", ".summary", ".items", ".ai", ".overwrite", ".confirm", ".facts",
       ".facts-list", ".picker", ".minimize", ".close", ".facts-close",
     ];
@@ -93,6 +94,9 @@ function createHarness(runtimeHandler, bridgeHandler = {}) {
     runtime: {
       async sendMessage(payload) {
         calls.push(payload);
+        if(payload.type === "PAGE_SCAN") return {ok:true,...await bridge.scan()};
+        if(payload.type === "PAGE_APPLY") return {ok:true,results:await bridge.apply(payload.items,payload.overwrite)};
+        if(payload.type === "PAGE_CANCEL") return {ok:true,cancelled:true};
         return runtimeHandler(payload);
       },
     },
@@ -124,9 +128,12 @@ function createHarness(runtimeHandler, bridgeHandler = {}) {
         return { ok: true, added: 2, remaining: 0, sections: [] };
       },
       cancel() { workflowCancels += 1; return true; },
+      observe() {return {waitForChanges:async()=>({}),disconnect(){}};},
+      advanceStep(){return {status:"clicked"};},
     },
-    setTimeout,
+    setTimeout, clearTimeout, AbortController, location:{href:"https://jobs.example.test/apply"},
   });
+  vm.runInContext(sessionSource, context);
   vm.runInContext(source, context);
   const host = root.children[0];
   return {
@@ -172,7 +179,7 @@ test("scan uses LOCAL_MATCH, renders checked preview, and applies selected value
   assert.equal(harness.shadow.querySelector(".items").querySelectorAll("input:checked").length, 1);
 
   await harness.shadow.querySelector(".confirm").onclick({ isTrusted: true });
-  assert.deepEqual(JSON.parse(JSON.stringify(harness.applyCalls)), [{ items: [{ fieldId: "field-1", value: "林测试" }], overwrite: false }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.applyCalls)), [{ items: [{ fieldId: "field-1", label: "姓名", value: "林测试", displayValue: "林测试" }], overwrite: false }]);
   assert.match(harness.shadow.querySelector(".status").textContent, /成功 1 项.*仍有 1 个空字段，其中 1 项已匹配/);
 });
 
@@ -396,4 +403,22 @@ test('local-only scan never calls AI and reopen refreshes a deleted or renamed s
   assert.equal(harness.shadow.querySelector('.resume').value,'new');
   assert.equal(harness.shadow.querySelector('.resume').children[0].textContent,'更新的简历');
   assert.equal(harness.shadow.querySelector('.preview').hidden,true,'资料被删除替换后旧计划不能继续应用');
+});
+
+test("floating continuous mode rescans dynamic fields but uses only approved source paths",async()=>{
+ let filled=false,scans=0;
+ const harness=createHarness(async payload=>{
+  if(payload.type==='PANEL_STATE')return {ok:true,resumes:[{id:'r',name:'虚构'}],activeId:'r'};
+  if(payload.type==='LOCAL_MATCH')return {ok:true,items:payload.fields.map(field=>({fieldId:field.id,sourcePath:field.id==='name'?'personal.name':'personal.email',value:field.id==='name'?'虚构姓名':'demo@example.test',label:field.label}))};
+  throw new Error(payload.type);
+ },{scan:async()=>({fields:++scans===1?[{id:'name',label:'姓名',value:''}]:[{id:filled?'email':'name',label:filled?'邮箱':'姓名',value:''}]}),apply:async items=>{filled=true;return items.map(item=>({fieldId:item.fieldId,status:'applied'}));}});
+ await tick();
+ await harness.shadow.querySelector('.local').onclick({isTrusted:true});
+ await harness.shadow.querySelector('.continuous').onclick({isTrusted:true});
+ assert.equal(harness.applyCalls.length,1);
+ assert.equal(harness.applyCalls[0].items[0].sourcePath,'personal.name');
+ assert.ok(harness.calls.filter(call=>call.type==='PAGE_SCAN').length>=3);
+ assert.equal(harness.calls.some(call=>call.type==='MATCH'),false,'本地模式连续处理不得调用AI');
+ assert.match(harness.shadow.querySelector('.status').textContent,/连续填写已结束/);
+ assert.equal(harness.shadow.querySelector('.stop').hidden,true);
 });

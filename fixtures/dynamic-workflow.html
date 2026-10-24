@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>动态招聘流程验收 · 虚构资料</title>
+  <style>
+    body{font:16px system-ui;margin:32px auto;max-width:900px;background:#f6f8fa;color:#172b45}form,section{background:#fff;padding:24px;margin:16px 0;border:1px solid #ccd6df;border-radius:12px}.apply-form-array-card-content{border:1px dashed #aab8c8;padding:16px;margin:12px 0}label{display:block;margin:8px 0}input,button{font:inherit;padding:10px;margin:6px}button{cursor:pointer}#run{background:#1767e8;color:#fff;border:0;border-radius:8px}pre{white-space:pre-wrap}.error{color:#b42318}[hidden]{display:none!important}
+  </style>
+</head>
+<body>
+  <h1>动态招聘流程验收</h1>
+  <p>虚构资料；验证新增记录、联动字段、稳定等待、连续轮次和安全下一步检查。</p>
+  <button id="run" type="button">运行动态流程验收</button>
+  <pre id="result" role="status">等待测试</pre>
+  <form data-resume-helper-form>
+    <section data-resume-helper-section="projects">
+      <h2>项目经历</h2>
+      <div class="records"></div>
+      <button class="add-project" type="button">添加项目经历</button>
+    </section>
+    <button class="next" type="button">下一步</button>
+    <button class="submit" type="submit">提交申请</button>
+  </form>
+  <script src="dynamic-workflow.js"></script>
+  <script src="../extension/content.js"></script>
+  <script src="../extension/workflow.js"></script>
+  <script src="../extension/session.js"></script>
+</body>
+</html>

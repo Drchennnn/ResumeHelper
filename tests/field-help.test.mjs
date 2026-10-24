@@ -5,8 +5,8 @@ import {FIELD_HELP,getFieldHelp} from '../extension/lib/field-help.js';
 
 test('every schema field has concise non-empty help',()=>{
  const all=SECTIONS.flatMap(section=>section.fields.map(field=>({section,field})));
- assert.equal(all.length,240);
- assert.equal(Object.keys(FIELD_HELP).length,240);
+ assert.equal(all.length,251);
+ assert.equal(Object.keys(FIELD_HELP).length,251);
  for(const {section,field} of all){
   const help=getFieldHelp(section.key,field);
   assert.equal(typeof help,'string',`${section.key}.${field.key}`);

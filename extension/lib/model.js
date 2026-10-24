@@ -1,15 +1,16 @@
 import {SECTIONS} from './schema.js';
 export {SECTIONS};
 
-const sectionAliases={job_intention:'intent',work_experience:'experience',certificate:'certificates',language_skills:'languages',social_practices:'social_practice'};
+const sectionAliases={job_intention:'intent',work_experience:'experience',certificate:'certificates',language_skills:'languages',social_practices:'social_practice',training:'training_experiences'};
 const fieldAliases={
  personal:{address:['city'],personal_workspace_url:['website'],self_introduction:['summary']},
  job_intention:{target_position:['role'],preferred_city:['city'],availability_date:['availability'],expected_salary:['salary']},
  education:{start_date:['start'],end_date:['end'],description:['details']},
  work_experience:{position:['role'],start_date:['start'],end_date:['end'],description:['details']},
  projects:{start_date:['start'],end_date:['end'],description:['details'],project_link:['url']},
- skills:{soft:['other']},certificate:{certificate_name:['name'],certificate_date:['date']},
- language_skills:{language_type:['name'],proficiency_level:['level']}
+ skills:{soft:['other']},certificate:{certificate_name:['name'],certificate_date:['date'],number:['certificate_id'],issuer:['certicate_department'],score:['certicate_score'],valid_until:['certicate_validdate'],description:['certicate_description']},
+ language_skills:{language_type:['name'],proficiency_level:['level']},
+ training:{name:['trainingName'],organization:['trainingInstitution'],start_date:['startDate'],end_date:['endDate'],date_range:['trainingDate'],outcome:['trainingOutcome'],description:['trainingContent']}
 };
 const clean=value=>typeof value==='string'?value.slice(0,20000):typeof value==='number'&&Number.isFinite(value)?String(value):typeof value==='boolean'?value:'';
 const hasValue=value=>value===true||value===false||(typeof value==='number'&&Number.isFinite(value))||(typeof value==='string'&&value.trim()!=='');
@@ -22,7 +23,7 @@ const recordIdentityKeys={
 
 function inputSection(input,section){return input[section.key]!==undefined?input[section.key]:input[sectionAliases[section.key]];}
 function explicitDateRange(value){
- const match=/^(\d{4}-(?:0[1-9]|1[0-2]))\s*(?:至|到|—|–|~|～|\s-\s)\s*(至今|现在|present|\d{4}-(?:0[1-9]|1[0-2]))$/i.exec(String(value||'').trim());
+ const match=/^(\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)\s*(?:至|到|—|–|~|～|\s-\s)\s*(至今|现在|present|\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)$/i.exec(String(value||'').trim());
  return match?{start_date:match[1],end_date:/^(至今|现在|present)$/i.test(match[2])?'至今':match[2]}:null;
 }
 function normalizeRow(section,value){
@@ -50,8 +51,8 @@ export function normalizeResume(input){
   out[section.key]=section.repeatable?(Array.isArray(value)?value.slice(0,30).map(row=>normalizeRow(section,row)):[]):normalizeRow(section,value);
  }
  let extras=clean(input.extras);
- // The old schema had an issuer without a current-site equivalent. Keep that
- // information as free text instead of assigning it to the wrong field.
+ // Preserve the historical free-text copy as well as the current issuer field
+ // so importing an older export does not discard its notes.
  if(input.certificate===undefined&&Array.isArray(input.certificates)){
   const issuers=input.certificates.map(item=>clean(item?.issuer)).filter(hasValue);
   if(issuers.length)extras=[extras,...issuers.map(value=>`证书颁发机构：${value}`)].filter(Boolean).join('\n');
@@ -62,12 +63,62 @@ export function normalizeResume(input){
 
 const displayValue=value=>typeof value==='boolean'?(value?'是':'否'):String(value);
 const degreeRank=value=>{const text=String(value||'');if(/博士/.test(text))return 4;if(/硕士|研究生/.test(text))return 3;if(/本科|学士/.test(text))return 2;if(/专科|大专|高职/.test(text))return 1;return 0;};
+const earliestExplicitDate=rows=>rows.map(row=>String(row?.start_date||'').trim()).filter(value=>/^\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?$/.test(value)).sort()[0];
+function derivedBusinessFacts(resume,existingPaths){
+ const out=[],push=(path,label,value)=>{if(hasValue(value)&&!existingPaths.has(path)){out.push({path,label,value:displayValue(value),derived:true});existingPaths.add(path);}};
+ const education=Array.isArray(resume?.education)?resume.education:[];
+ const ranks=education.map(row=>degreeRank(row?.degree)),highest=ranks.length?Math.max(...ranks):0;
+ const highestIndexes=highest?ranks.map((rank,index)=>rank===highest?index:-1).filter(index=>index>=0):[];
+ if(highestIndexes.length===1&&ranks.every(Boolean)){
+  const row=education[highestIndexes[0]]||{};
+  push('personal.highest_degree','个人信息 / 最高学历',row.degree);
+  push('personal.academic_degree','个人信息 / 学位',row.academic_degree);
+  push('personal.graduate_school','个人信息 / 毕业院校',row.school);
+  push('personal.graduation_major','个人信息 / 毕业专业',row.major);
+  push('personal.graduation_time','个人信息 / 毕业时间',row.end_date);
+ }
+ const lowest=highest&&ranks.every(Boolean)?Math.min(...ranks):0;
+ const lowestIndexes=lowest?ranks.map((rank,index)=>rank===lowest?index:-1).filter(index=>index>=0):[];
+ if(lowestIndexes.length===1){
+  const row=education[lowestIndexes[0]]||{};
+  push('business.first_degree','业务信息 / 第一学历',row.degree);
+  push('business.first_degree_school','业务信息 / 第一学历院校',row.school);
+  push('business.first_degree_major','业务信息 / 第一学历专业',row.major);
+  push('business.first_degree_graduation_time','业务信息 / 第一学历毕业时间',row.end_date);
+ }
+ const internships=(Array.isArray(resume?.internships)?resume.internships:[]).filter(row=>Object.values(row||{}).some(hasValue));
+ const work=(Array.isArray(resume?.work_experience)?resume.work_experience:[]).filter(row=>Object.values(row||{}).some(hasValue));
+ const projects=(Array.isArray(resume?.projects)?resume.projects:[]).filter(row=>Object.values(row||{}).some(hasValue));
+ if(internships.length)push('business.has_internships','业务信息 / 是否有实习经历',true);
+ if(work.length)push('business.has_work_experience','业务信息 / 是否有工作经历',true);
+ if(projects.length)push('business.has_projects','业务信息 / 是否有项目经历',true);
+ for(const [section,key,label] of [['awards','has_awards','是否有获奖经历'],['cadre_experiences','has_campus_experience','是否有校园经历'],['patents','has_patents','是否有专利'],['publications','has_publications','是否有论文发表']]){
+  if((resume?.[section]||[]).some(row=>Object.values(row||{}).some(hasValue)))push(`business.${key}`,`业务信息 / ${label}`,true);
+ }
+ if(work.length+internships.length)push('business.has_work_or_internship_experience','业务信息 / 是否有工作或实习经历',true);
+ push('business.earliest_work_or_internship_date','业务信息 / 最早工作或实习开始时间',earliestExplicitDate([...work,...internships]));
+ return out;
+}
+export function businessFacts(resume){return derivedBusinessFacts(resume,new Set(flattenStoredFacts(resume).map(fact=>fact.path)));}
+function flattenStoredFacts(resume){
+ const out=[];
+ for(const section of SECTIONS){
+  const rows=section.repeatable?(Array.isArray(resume?.[section.key])?resume[section.key]:[]):[resume?.[section.key]||{}];
+  rows.forEach((row,index)=>section.fields.forEach(field=>{if(hasValue(row?.[field.key]))out.push({path:`${section.key}.${section.repeatable?`${index}.`:''}${field.key}`});}));
+ }
+ return out;
+}
 export function flattenResume(resume){
  const out=[];
  for(const section of SECTIONS){
   const rows=section.repeatable?(Array.isArray(resume?.[section.key])?resume[section.key]:[]):[resume?.[section.key]||{}];
   const educationRanks=section.key==='education'?rows.map(row=>degreeRank(row?.degree)):[];
   const highestRank=educationRanks.length?Math.max(...educationRanks):0;
+  const lowestRank=educationRanks.length?Math.min(...educationRanks):0;
+  const firstEducationIndex=lowestRank>0&&educationRanks.every(Boolean)&&educationRanks.filter(rank=>rank===lowestRank).length===1?educationRanks.indexOf(lowestRank):null;
+  const academicRanks=section.key==='education'?rows.map(row=>({学士:1,硕士:2,博士:3}[String(row?.academic_degree||'').trim()]||0)):[];
+  const highestAcademicRank=academicRanks.length?Math.max(...academicRanks):0;
+  const highestAcademicIndex=highestAcademicRank>0&&academicRanks.every(Boolean)&&academicRanks.filter(rank=>rank===highestAcademicRank).length===1?academicRanks.indexOf(highestAcademicRank):null;
   const highestEducationIndex=highestRank>0&&educationRanks.every(Boolean)&&educationRanks.filter(rank=>rank===highestRank).length===1?educationRanks.indexOf(highestRank):null;
   rows.forEach((row,index)=>{
    const identityKey=section.repeatable?(recordIdentityKeys[section.key]||[]).find(key=>hasValue(row?.[key])):undefined;
@@ -79,9 +130,12 @@ export function flattenResume(resume){
    });
    if(section.repeatable&&!hasValue(row?.date_range)&&hasValue(row?.start_date)&&hasValue(row?.end_date))push('date_range','起止时间',`${displayValue(row.start_date)} - ${displayValue(row.end_date)}`);
    if(section.key==='education'&&highestEducationIndex!==null)push('is_highest_degree','是否最高学历',index===highestEducationIndex);
+   if(section.key==='education'&&firstEducationIndex!==null)push('is_first_education','是否第一学历',index===firstEducationIndex);
+   if(section.key==='education'&&highestAcademicIndex!==null)push('is_highest_academic_degree','是否最高学位',index===highestAcademicIndex);
   });
  }
  if(hasValue(resume?.extras))out.push({path:'extras',label:'补充资料',value:String(resume.extras)});
+ out.push(...derivedBusinessFacts(resume,new Set(out.map(fact=>fact.path))));
  return out;
 }
 
@@ -99,10 +153,19 @@ export function completionStats(resume){
 export function resolvePlan(raw,fields,resume){
  const factList=flattenResume(resume),facts=new Map(factList.map(fact=>[fact.path,fact])),ids=new Map(fields.map(field=>[field.id,field])),assignments=recordAssignments(fields,factList),seen=new Set(),items=[];
  for(const mapping of Array.isArray(raw?.mappings)?raw.mappings:[]){
-  if(!mapping||seen.has(mapping.fieldId)||!ids.has(mapping.fieldId)||!facts.has(mapping.sourcePath))continue;
-  const fact=facts.get(mapping.sourcePath),field=ids.get(mapping.fieldId);let value=fact.value;
+  if(!mapping||seen.has(mapping.fieldId)||!ids.has(mapping.fieldId))continue;
+  const sourcePaths=Array.isArray(mapping.sourcePaths)?mapping.sourcePaths:mapping.sourcePath?[mapping.sourcePath]:[];
+  if(!sourcePaths.length||sourcePaths.length>4||new Set(sourcePaths).size!==sourcePaths.length||sourcePaths.some(path=>!facts.has(path)))continue;
+  const sourceFacts=sourcePaths.map(path=>facts.get(path)),fact=sourceFacts[0],field=ids.get(mapping.fieldId);
+  const composite=sourceFacts.length>1,separator=composite?mapping.separator:undefined;
+  if(composite&&(![' ','\n','，',' / ','；'].includes(separator)||field.options?.length||['select-one','select-multiple','radio','checkbox'].includes(field.type)))continue;
+  if(composite){
+   const rowPrefixes=new Set(sourcePaths.map(path=>path.split('.').slice(0,-1).join('.')));
+   if(rowPrefixes.size!==1)continue;
+  }
   const metadata=metadataCandidates(field,factList,assignments);
-  if(metadata!==null&&!metadata.some(candidate=>candidate.path===fact.path))continue;
+  if(metadata!==null&&sourceFacts.some(item=>!metadata.some(candidate=>candidate.path===item.path)))continue;
+  let value=composite?sourceFacts.map(item=>item.value).join(separator):fact.value;
   if(fact.path==='extras'&&normalizedLabel(field.label)!=='补充说明')continue;
   const options=Array.isArray(field.options)?field.options:[],nativeSelect=['select-one','select-multiple'].includes(field.type);
   if(nativeSelect&&!options.length)continue;
@@ -112,7 +175,7 @@ export function resolvePlan(raw,fields,resume){
    value=option.value;
   }
   seen.add(mapping.fieldId);
-  items.push({fieldId:mapping.fieldId,sourcePath:mapping.sourcePath,label:field.label,sourceLabel:fact.label,value,displayValue:field.options?.find(option=>option.value===value)?.label||displayValue(value)});
+  items.push({fieldId:mapping.fieldId,sourcePath:fact.path,...(composite?{sourcePaths,separator}:{}),label:field.label,sourceLabel:composite?sourceFacts.map(item=>item.label).join(separator):fact.label,value,displayValue:field.options?.find(option=>option.value===value)?.label||displayValue(value)});
  }
  return items;
 }
@@ -135,6 +198,23 @@ const manualAliases={
  'job_intention.preferred_city':['期望城市','意向城市','期望工作地点','意向工作地点'],
  'personal.personal_workspace_url':['个人网站','个人主页','作品链接','website']
 };
+Object.assign(manualAliases,{
+ 'business.first_degree':['第一学历','初始学历'],
+ 'business.first_degree_school':['第一学历院校','第一学历学校'],
+ 'business.first_degree_major':['第一学历专业'],
+ 'business.first_degree_graduation_time':['第一学历毕业时间'],
+ 'business.has_internships':['是否有实习经历','有无实习经历'],
+ 'business.has_work_experience':['是否有工作经历','有无工作经历'],
+ 'business.has_projects':['是否有项目经历','有无项目经历'],
+ 'business.has_awards':['是否有获奖经历','是否有获奖记录'],
+ 'business.has_campus_experience':['是否有校园经历','是否有校园实践经历'],
+ 'business.has_patents':['是否有专利'],
+ 'business.has_publications':['是否有论文发表'],
+ 'education.is_first_education':['是否第一学历','第一学历标记'],
+ 'education.is_highest_academic_degree':['是否最高学位','是否最高学位教育'],
+ 'business.has_work_or_internship_experience':['是否有工作或实习经历','是否有职业经历','有无工作/实习经历'],
+ 'business.earliest_work_or_internship_date':['首次参加工作时间','最早工作时间','最早职业经历开始时间']
+});
 for(const sectionKey of ['internships','projects','cadre_experiences','work_experience','social_practices','training']){
  manualAliases[`${sectionKey}.start_date`]=['开始时间','开始日期','起始时间','起始日期'];
  manualAliases[`${sectionKey}.end_date`]=['结束时间','结束日期','截止时间','截止日期'];
@@ -149,12 +229,14 @@ const sectionNames={
  internships:['实习经历','实习经验'],projects:['项目经历','项目经验'],cadre_experiences:['校园经历','学生工作'],
  work_experience:['工作经历','工作经验'],social_practices:['社会实践'],skills:['技能专长','技能'],
  certificate:['证书','证书信息'],language_skills:['外语能力','语言能力'],family_relations:['家庭情况','家庭成员'],
- awards:['获奖经历','荣誉奖励'],patents:['专利信息','专利'],publications:['论文发表','论文'],training:['培训经历','培训']
+ awards:['获奖经历','荣誉奖励'],patents:['专利信息','专利'],publications:['论文发表','论文'],training:['培训经历','培训','training_experiences']
 };
+sectionNames.work_and_internship_experience=['工作及实习经历','工作/实习经历','职业经历'];
 const sectionByName=new Map(SECTIONS.flatMap(section=>[
  [normalizedLabel(section.key),section.key],[normalizedLabel(section.title),section.key],
  ...(sectionNames[section.key]||[]).map(name=>[normalizedLabel(name),section.key])
 ]));
+for(const name of ['work_and_internship_experience',...sectionNames.work_and_internship_experience])sectionByName.set(normalizedLabel(name),'work_and_internship_experience');
 
 function sectionKeyOf(value){
  const normalized=normalizedLabel(value);
@@ -163,6 +245,8 @@ function sectionKeyOf(value){
  const matches=[...sectionByName].filter(([name])=>name.length>=3&&normalized.includes(name)).map(([,key])=>key);
  return matches.length&&matches.every(key=>key===matches[0])?matches[0]:undefined;
 }
+const unifiedExperienceSections=new Set(['work_experience','internships']);
+function sourceSectionAllowed(sectionKey,path){return sectionKey==='work_and_internship_experience'?unifiedExperienceSections.has(path.split('.')[0]):!sectionKey||path.split('.')[0]===sectionKey||(sectionKey==='personal'&&path.startsWith('business.'));}
 function optionComparable(value,sourcePath){
  const labelled=normalizedLabel(value);
  if(sourcePath.endsWith('.major_category')){
@@ -186,8 +270,8 @@ function optionMatchesFact(option,fact){
  if(fact.path.endsWith('.major_category')&&!target)return false;
  return [option.value,option.label].some(value=>optionComparable(value,fact.path)===target);
 }
-const metadataFieldAliases={education:{highest_degree:'is_highest_degree',is_highest:'is_highest_degree'},projects:{project_name:'name'}};
-const virtualFieldKeys={education:new Set(['is_highest_degree'])};
+const metadataFieldAliases={certificate:{certificate_id:'number',certicate_department:'issuer',certicate_score:'score',certicate_validdate:'valid_until',certicate_description:'description'},training:{trainingName:'name',trainingInstitution:'organization',startDate:'start_date',endDate:'end_date',trainingDate:'date_range',trainingOutcome:'outcome',trainingContent:'description'},personal:{has_project_experience:'has_projects',has_internship_experience:'has_internships',has_internship_or_work_experience:'has_work_or_internship_experience',has_award_record:'has_awards',has_campus_practice_experience:'has_campus_experience',has_patent:'has_patents',has_publication:'has_publications'},education:{highest_degree:'is_highest_degree',is_highest:'is_highest_degree',is_highest_education:'is_highest_degree'},projects:{project_name:'name'}};
+const virtualFieldKeys={education:new Set(['is_highest_degree','is_first_education','is_highest_academic_degree']),personal:new Set(['has_projects','has_internships','has_work_experience','has_work_or_internship_experience','has_awards','has_campus_experience','has_patents','has_publications','first_degree','first_degree_school','first_degree_major','first_degree_graduation_time'])};
 const personalIntentCityLabels=new Set(['期望城市','意向城市','期望工作地点','意向工作地点'].map(normalizedLabel));
 function matchedIdentityIndex(recordLabel,facts,sectionKey){
  const recordText=normalizedLabel(recordLabel);
@@ -219,8 +303,9 @@ function recordAssignments(fields,facts){
    const fieldSection=(parts.length>1?sectionKeyOf(parts[0]):undefined)||sectionKeyOf(field.section);
    const groupIndex=Number(field.groupIndex);
    if(fieldSection!==section.key||!Number.isInteger(groupIndex)||groupIndex<0)continue;
-   if(!groups.has(groupIndex))groups.set(groupIndex,[]);
-   groups.get(groupIndex).push(field);
+   const key=`${field.documentId || `frame-${field.frameId||0}`}:${groupIndex}`;
+   if(!groups.has(key))groups.set(key,[]);
+   groups.get(key).push(field);
   }
   const sourceRows=[...new Set(facts.map(fact=>fact.path.split('.')).filter(parts=>parts[0]===section.key&&/^\d+$/.test(parts[1])).map(parts=>Number(parts[1])))].sort((a,b)=>a-b);
   const decided=new Map(),used=new Set();
@@ -238,9 +323,13 @@ function recordAssignments(fields,facts){
   if(collisions.size)for(const [groupIndex,index] of decided)if(collisions.has(index))decided.set(groupIndex,-1);
   const remaining=sourceRows.filter(index=>!used.has(index)&&!collisions.has(index));
   const hasExistingRecords=[...decided.values()].some(index=>index!==null);
-  for(const groupIndex of [...groups.keys()].sort((a,b)=>a-b)){
-   if(decided.get(groupIndex)!==null)continue;
-   decided.set(groupIndex,hasExistingRecords?(remaining.length?remaining.shift():-1):(sourceRows.includes(groupIndex)?groupIndex:-1));
+  const frameScopes=new Set([...groups.values()].map(group=>group[0].documentId || `frame-${group[0].frameId||0}`));
+  const orderedGroups=[...groups.keys()].sort((a,b)=>Number(groups.get(a)[0].frameId||0)-Number(groups.get(b)[0].frameId||0)||Number(groups.get(a)[0].groupIndex)-Number(groups.get(b)[0].groupIndex));
+  for(const groupKey of orderedGroups){
+   if(decided.get(groupKey)!==null)continue;
+   const localIndex=Number(groups.get(groupKey)[0].groupIndex);
+   // Blank records split across documents have no trustworthy shared ordering.
+   decided.set(groupKey,frameScopes.size>1?-1:hasExistingRecords?(remaining.length?remaining.shift():-1):(sourceRows.includes(localIndex)?localIndex:-1));
   }
   for(const [groupIndex,groupFields] of groups)for(const field of groupFields)assignments.set(field.id,decided.get(groupIndex));
  }
@@ -260,10 +349,11 @@ function metadataCandidates(field,facts,assignments){
  }
  if(!sectionKey&&!fieldKey)return null;
  const schemaSection=sectionKey&&SECTIONS.find(section=>section.key===sectionKey);
- if(sectionKey&&fieldKey&&!schemaSection?.fields.some(item=>item.key===fieldKey)&&!virtualFieldKeys[sectionKey]?.has(fieldKey))return [];
+ const unifiedField=sectionKey==='work_and_internship_experience'&&['company','company_size','is_overseas_experience','department','position','start_date','end_date','date_range','description','industry','employment_nature','salary_year','reference_name','reference_contact','reference_title','departure_reason'].includes(fieldKey);
+ if(sectionKey&&fieldKey&&!schemaSection?.fields.some(item=>item.key===fieldKey)&&!virtualFieldKeys[sectionKey]?.has(fieldKey)&&!unifiedField)return [];
  let candidates=facts.filter(fact=>{
   const parts=fact.path.split('.');
-  return (!sectionKey||parts[0]===sectionKey)&&(!fieldKey||parts.at(-1)===fieldKey);
+  return sourceSectionAllowed(sectionKey,fact.path)&&(!fieldKey||parts.at(-1)===fieldKey);
  });
  const assignedIndex=assignments?.has(field.id)?assignments.get(field.id):null;
  if(assignedIndex!==null){
@@ -271,6 +361,15 @@ function metadataCandidates(field,facts,assignments){
   candidates=candidates.filter(fact=>Number(fact.path.split('.')[1])===assignedIndex);
   return candidates;
  }
+ if(sectionKey==='work_and_internship_experience'&&field.recordLabel){
+  const recordText=normalizedLabel(field.recordLabel);
+  const identityMatches=candidates.filter(fact=>fact.recordLabel&&normalizedLabel(fact.recordLabel)===recordText);
+  const prefixes=new Set(identityMatches.map(fact=>fact.path.split('.').slice(0,2).join('.')));
+  if(prefixes.size!==1)return [];
+  const prefix=[...prefixes][0];
+  return candidates.filter(fact=>fact.path.startsWith(`${prefix}.`));
+ }
+ if(sectionKey==='work_and_internship_experience')return [];
  const identifiedIndex=schemaSection?.repeatable?matchedIdentityIndex(field.recordLabel,facts,sectionKey):null;
  if(identifiedIndex!==null){
   if(identifiedIndex<0)return [];

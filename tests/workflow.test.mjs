@@ -67,10 +67,11 @@ function harness(sectionEntries = [], explicitEntries = [], hostname = "") {
   const document = {
     getElementById(id) { return roots.get(id) || null; },
     querySelector(selector) { return explicit.get(selector) || null; },
+    querySelectorAll() { return []; },
   };
   const context = vm.createContext({ document, location: {hostname}, setTimeout, clearTimeout, Date, getComputedStyle: () => ({ display: "block", visibility: "visible" }) });
   vm.runInContext(source, context);
-  return { api: context.__personalResumeWorkflow, roots };
+  return { api: context.__personalResumeWorkflow, roots, document };
 }
 
 function section(id, existing = 0, addText = "添加") {
@@ -155,7 +156,7 @@ test("prepare can be cancelled while waiting for a page that did not create a re
 });
 
 test("popup injects content, workflow, then floating scripts in dependency order", () => {
-  assert.match(popupSource, /files:\['content\.js','workflow\.js','floating\.js'\]/);
+  assert.match(popupSource, /files:\['site-adapters\.js','content\.js','workflow\.js','session\.js','floating\.js'\]/);
 });
 
 
@@ -211,3 +212,136 @@ test("role add controls reject aria-disabled and navigation anchors", async () =
   assert.equal(education.status, "no_safe_add_button");
   assert.equal(disabled.clicks + navigation.clicks, 0);
 });
+
+test("a titled add button is allowed only inside its already-confirmed section", async () => {
+  const projects = section("formily-item-project_list", 0, "添加项目经历");
+  const {api} = harness([["formily-item-project_list", projects.root]]);
+  const result = await api.prepare({projects: 1});
+  assert.equal(result.added, 1);
+  assert.equal(projects.add.clicks, 1);
+});
+
+test("prepare stops at a visible dialog instead of guessing through it", async () => {
+  const projects = section("formily-item-project_list", 0);
+  const dialog = new FakeElement("div", "请选择项目类型");
+  dialog.setAttribute("role", "dialog");
+  dialog.hidden = true;
+  projects.add.click = () => { projects.add.clicks += 1; dialog.hidden = false; };
+  const {api, document} = harness([["formily-item-project_list", projects.root]]);
+  document.querySelectorAll = selector => selector.includes("role='dialog'") ? [dialog] : [];
+
+  const result = await api.prepare({projects: 1});
+  const item = result.sections.find(section => section.key === "projects");
+  assert.equal(item.status, "requires_dialog");
+  assert.equal(item.added, 0);
+  assert.equal(projects.add.clicks, 1);
+});
+
+test("observer detects nested fields, stale removal, and ignores helper UI mutations", async () => {
+  const fields = [];
+  const records = [];
+  let observerInstance;
+  class FakeMutationObserver {
+    constructor(callback) { this.callback = callback; observerInstance = this; }
+    observe() {}
+    disconnect() { this.disconnected = true; }
+    trigger(mutations) { this.callback(mutations); }
+  }
+  const helper = {
+    nodeType: 1,
+    matches: selector => selector.includes("personal-resume-floating-host"),
+    closest: selector => selector.includes("personal-resume-floating-host") ? helper : null,
+    querySelector: () => null,
+  };
+  const makeField = () => ({
+    nodeType: 1,
+    matches: selector => selector.includes("input"),
+    closest: () => null,
+    querySelector: () => null,
+  });
+  const nestedRow = {
+    nodeType: 1,
+    matches: selector => selector.includes("apply-form-array-card-content"),
+    closest: () => null,
+    querySelector: selector => selector.includes("input") ? fields.at(-1) : null,
+  };
+  const document = {
+    documentElement: {},
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector.startsWith("input")) return fields;
+      if (selector.includes("apply-form-array-card-content")) return records;
+      return [];
+    },
+  };
+  const context = vm.createContext({document, location: {hostname: "", href: "https://jobs.example/resume"}, MutationObserver: FakeMutationObserver, setTimeout, clearTimeout, Date, getComputedStyle: () => ({display: "block", visibility: "visible"})});
+  vm.runInContext(source, context);
+  const watch = context.__personalResumeWorkflow.observe();
+  const initialRevision = watch.snapshot().revision;
+  observerInstance.trigger([{type: "childList", addedNodes: [helper], removedNodes: []}]);
+  assert.equal(watch.snapshot().revision, initialRevision, "helper UI must not wake the observer");
+
+  const added = makeField(); fields.push(added); records.push(nestedRow);
+  const changed = watch.waitForChanges({since: initialRevision, timeoutMs: 200});
+  observerInstance.trigger([{type: "childList", addedNodes: [nestedRow], removedNodes: []}]);
+  const first = await changed;
+  assert.equal(first.after.fields, 1);
+  assert.equal(first.after.records, 1);
+
+  const revision = watch.snapshot().revision;
+  fields.pop(); records.pop();
+  const removed = watch.waitForChanges({since: revision, timeoutMs: 200});
+  observerInstance.trigger([{type: "childList", addedNodes: [], removedNodes: [nestedRow]}]);
+  const second = await removed;
+  assert.equal(second.after.fields, 0);
+  assert.equal(second.after.records, 0);
+  watch.disconnect();
+  assert.equal(observerInstance.disconnected, true);
+});
+
+test("next-step inspection allows one exact safe control and blocks submission or validation errors", () => {
+  const next = button("下一步");
+  const submit = button("提交申请");
+  const error = new FakeElement("div", "请填写必填项");
+  const form = {
+    querySelectorAll(selector) {
+      if (selector === "button,[role='button']") return [next, submit];
+      if (selector.includes("aria-invalid")) return this.hasError ? [error] : [];
+      return [];
+    },
+    hasError: false,
+    disabled: false,
+    hidden: false,
+    getAttribute: () => null,
+    closest: () => null,
+    getClientRects: () => [{}],
+  };
+  const document = {
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: selector => selector.startsWith("form") ? [form] : [],
+  };
+  const context = vm.createContext({document, location: {hostname: ""}, setTimeout, clearTimeout, Date, getComputedStyle: () => ({display: "block", visibility: "visible"})});
+  vm.runInContext(source, context);
+  assert.equal(context.__personalResumeWorkflow.inspectNextStep().status, "ready");
+  assert.equal(context.__personalResumeWorkflow.advanceStep().reason, "explicit_confirmation_required");
+  assert.equal(next.clicks, 0);
+  form.hasError = true;
+  assert.equal(context.__personalResumeWorkflow.advanceStep({explicit: true}).reason, "validation_errors");
+  assert.equal(next.clicks, 0);
+  form.hasError = false;
+  assert.equal(context.__personalResumeWorkflow.advanceStep({explicit: true}).status, "clicked");
+  assert.equal(next.clicks, 1);
+  assert.equal(submit.clicks, 0);
+});
+
+ test("an already visible dialog prevents add and next-step controls", async()=>{
+  const project=section("formily-item-project_list",0);
+  const {api,document}=harness([["formily-item-project_list",project.root]]);
+  const dialog=new FakeElement("div","确认");
+  document.querySelectorAll=selector=>selector.includes("role='dialog'")?[dialog]:[];
+  assert.equal((await api.prepare({projects:1})).status,"requires_dialog");
+  assert.equal(project.add.clicks,0);
+  assert.equal(api.advanceStep({explicit:true}).reason,"site_confirmation_required");
+ });
